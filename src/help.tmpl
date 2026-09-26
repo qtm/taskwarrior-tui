@@ -8,7 +8,7 @@ Keybindings:
 
     {{previous_tab}}: Previous view                     - Go to previous view
 
-    {{annotations}}: annotations                       - Toggle all-task annotations / return to previous view
+    {{annotations}}: annotations                       - Toggle half-screen annotations pane
 
 Keybindings for task report:
 
@@ -56,9 +56,9 @@ Keybindings for task report:
 
     {{annotate}}: task {selected} annotate {string} - Annotate current task
 
-    Ctrl-e: scroll down task details     - Scroll task details view down one line
+    Ctrl-e: scroll down side pane        - Scroll task details / annotations down one line
 
-    Ctrl-y: scroll up task details       - Scroll task details view up one line
+    Ctrl-y: scroll up side pane          - Scroll task details / annotations up one line
 
     \: transpose split                   - Toggle window vertical or horizontal split
 
@@ -142,17 +142,21 @@ Keybindings for report switcher:
 
     Enter: task report {selected}       - Select highlighted report
 
-Keybindings for annotations (newest first, all tasks):
+Keybindings for annotations pane (newest first, all tasks):
 
-    {{annotations}} / Esc: back                        - Return to the previous view
+    {{annotations}} / Esc: close                       - Restore the previous layout / view
 
-    {{down}} / {{up}}: scroll                            - Scroll down / up
+    Ctrl-e / Ctrl-y: scroll              - Scroll annotations down / up
 
-    {{page_down}} / {{page_up}}: page                          - Scroll one page down / up
+    Ctrl-d / Ctrl-u: page                - Scroll annotations one page down / up
 
-    {{go_to_top}} / {{go_to_bottom}}: top / bottom                  - Go to newest / oldest annotation
+    {{down}} / {{up}}: select task                       - Task list controls remain active
 
-    {{refresh}}: refresh                               - Reload annotations
+    {{zoom}}: task info                             - Replace annotations with selected task details
+
+    {{transpose}}: transpose split                    - Toggle bottom / right placement
+
+    {{refresh}}: refresh                               - Reload tasks and annotations
 
 Keybindings for calendar:
 

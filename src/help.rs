@@ -46,6 +46,7 @@ fn keycode_for(name: &str, kc: &KeyConfig) -> KeyCode {
     "select_all" => kc.select_all,
     "delete" => kc.delete,
     "zoom" => kc.zoom,
+    "transpose" => kc.transpose,
     "annotate" => kc.annotate,
     "annotations" => kc.annotations,
     "refresh" => kc.refresh,
@@ -136,7 +137,8 @@ mod tests {
   fn annotations_help_uses_configured_toggle_and_refresh_keys() {
     let keys = KeyConfig::new("uda.taskwarrior-tui.keyconfig.annotations B\nuda.taskwarrior-tui.keyconfig.refresh F").unwrap();
     let help = Help::new(&keys);
-    assert!(help.text.contains("B / Esc: back"));
+    assert!(help.text.contains("B / Esc: close"));
+    assert!(help.text.contains("Ctrl-e / Ctrl-y: scroll"));
     assert!(help.text.contains("F: refresh"));
     assert!(!help.text.contains("{{annotations}}"));
   }

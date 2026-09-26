@@ -134,7 +134,6 @@ pub enum Mode {
   Projects,
   Timesheet,
   Calendar,
-  Annotations,
 }
 
 pub struct TaskwarriorTui {
@@ -496,23 +495,17 @@ impl TaskwarriorTui {
       Mode::Projects => self.draw_projects(f, main_layout),
       Mode::Timesheet => self.draw_timesheet(f, main_layout),
       Mode::Calendar => self.draw_calendar(f, main_layout),
-      Mode::Annotations => self.annotations.draw(f, main_layout, &self.config, &self.keyconfig),
     }
   }
 
   fn draw_tabs(&self, f: &mut Frame, layout: Rect) {
-    let titles = if self.mode == Mode::Annotations {
-      vec!["Annotations"]
-    } else {
-      vec!["Tasks", "Projects", "Timesheet", "Calendar"]
-    };
+    let titles = vec!["Tasks", "Projects", "Timesheet", "Calendar"];
     let tab_names: Vec<_> = titles.into_iter().map(Line::from).collect();
     let selected_tab = match self.mode {
       Mode::Tasks(_) => 0,
       Mode::Projects => 1,
       Mode::Timesheet => 2,
       Mode::Calendar => 3,
-      Mode::Annotations => 0,
     };
     let navbar_block = Block::default().style(self.config.uda_style_navbar);
     let context = Line::from(vec![
@@ -526,11 +519,6 @@ impl TaskwarriorTui {
       }),
       Span::from("]"),
     ]);
-    let context = if self.mode == Mode::Annotations {
-      Line::from("all tasks")
-    } else {
-      context
-    };
     let tabs = Tabs::new(tab_names)
       .block(navbar_block.clone())
       .select(selected_tab)
@@ -734,8 +722,8 @@ impl TaskwarriorTui {
       .constraints([Constraint::Min(0), Constraint::Length(2)].as_ref())
       .split(layout);
 
-    // render task report and task details if required
-    if self.task_report_info_show {
+    // Annotations temporarily replace task details in the same 50/50 split.
+    if self.task_report_info_show || self.annotations.visible {
       let direction = match self.task_info_location(rects[0].width) {
         TaskInfoLocation::Bottom => Direction::Vertical,
         TaskInfoLocation::Right => Direction::Horizontal,
@@ -748,7 +736,11 @@ impl TaskwarriorTui {
 
       self.task_report_height = split_task_layout[0].height;
       self.draw_task_report(f, split_task_layout[0]);
-      self.draw_task_details(f, split_task_layout[1]);
+      if self.annotations.visible {
+        self.annotations.draw(f, split_task_layout[1], &self.config, &self.keyconfig);
+      } else {
+        self.draw_task_details(f, split_task_layout[1]);
+      }
     } else {
       self.task_report_height = rects[0].height;
       self.draw_task_report(f, rects[0]);
@@ -1677,12 +1669,6 @@ impl TaskwarriorTui {
 
   pub async fn update(&mut self, force: bool) -> Result<()> {
     trace!("self.update({:?});", force);
-    if self.mode == Mode::Annotations {
-      if force || self.tasks_changed_since(self.annotations.last_refresh).unwrap_or(true) {
-        self.annotations.refresh(&self.task_exe);
-      }
-      return Ok(());
-    }
     if force || self.dirty || self.tasks_changed_since(self.last_export).unwrap_or(true) {
       self.get_context()?;
       let task_uuids = self.selected_task_uuids();
@@ -1707,6 +1693,9 @@ impl TaskwarriorTui {
       self.update_tags();
       self.task_details.clear();
       self.task_details_modified.clear();
+      if self.annotations.visible {
+        self.annotations.refresh(&self.task_exe);
+      }
       self.dirty = false;
       self.save_history()?;
 
@@ -3062,23 +3051,21 @@ impl TaskwarriorTui {
 
   pub async fn handle_input(&mut self, input: KeyCode) -> Result<()> {
     if input == self.keyconfig.annotations && self.annotations.toggle(&mut self.mode) {
-      if self.mode == Mode::Annotations {
-        self.update(true).await?;
+      if self.annotations.visible {
+        self.annotations.refresh(&self.task_exe);
       }
       return Ok(());
     }
-    match self.mode {
-      Mode::Annotations => {
-        if input == KeyCode::Esc {
-          self.annotations.toggle(&mut self.mode);
-        } else if input == self.keyconfig.quit || input == KeyCode::Ctrl('c') {
-          self.should_quit = true;
-        } else if input == self.keyconfig.refresh {
-          self.update(true).await?;
-        } else {
-          self.annotations.handle_navigation(input, &self.keyconfig);
-        }
+    if self.annotations.visible && self.mode == Mode::Tasks(Action::Report) {
+      if input == KeyCode::Esc {
+        self.annotations.toggle(&mut self.mode);
+        return Ok(());
       }
+      if self.annotations.handle_navigation(input) {
+        return Ok(());
+      }
+    }
+    match self.mode {
       Mode::Tasks(_) => {
         self.handle_input_by_task_mode(input).await?;
       }
@@ -3479,7 +3466,12 @@ impl TaskwarriorTui {
               }
             }
           } else if input == self.keyconfig.zoom {
-            self.task_report_info_show = !self.task_report_info_show;
+            if self.annotations.visible {
+              self.annotations.hide();
+              self.task_report_info_show = true;
+            } else {
+              self.task_report_info_show = !self.task_report_info_show;
+            }
           } else if input == self.keyconfig.transpose {
             self.toggle_task_info_location();
           } else if input == self.keyconfig.context_menu {
@@ -4632,10 +4624,11 @@ mod tests {
     for original in [Mode::Tasks(Action::Report), Mode::Projects, Mode::Timesheet, Mode::Calendar] {
       app.mode = original.clone();
       app.handle_input(app.keyconfig.annotations).await.unwrap();
-      assert_eq!(app.mode, Mode::Annotations);
-      app.update(true).await.unwrap();
+      assert_eq!(app.mode, Mode::Tasks(Action::Report));
+      assert!(app.annotations.visible);
       app.handle_input(app.keyconfig.annotations).await.unwrap();
       assert_eq!(app.mode, original);
+      assert!(!app.annotations.visible);
       assert_eq!(app.filter.as_str(), "project:annotations-test-no-match");
       assert_eq!(app.tasks.iter().map(|task| *task.uuid()).collect::<Vec<_>>(), tasks);
       assert_eq!(app.current_context, context);
@@ -4648,13 +4641,122 @@ mod tests {
 
     app.keyconfig.annotations = KeyCode::Char('B');
     app.handle_input(KeyCode::Char('B')).await.unwrap();
-    assert_eq!(app.mode, Mode::Annotations);
+    assert_eq!(app.mode, Mode::Tasks(Action::Report));
+    assert!(app.annotations.visible);
     app.handle_input(KeyCode::Esc).await.unwrap();
     assert_eq!(app.mode, Mode::Calendar);
+    assert!(!app.annotations.visible);
     app.mode = Mode::Tasks(Action::Add);
     app.handle_input(KeyCode::Char('B')).await.unwrap();
     assert_eq!(app.mode, Mode::Tasks(Action::Add));
     assert_eq!(app.command.as_str(), "B");
+  }
+
+  fn set_annotation_test_tasks(app: &mut TaskwarriorTui) {
+    app.tasks = import(
+      br#"[
+      {"uuid":"00000000-0000-0000-0000-000000000001","id":1,"entry":"20260101T000000Z","status":"pending","description":"TASK_LIST_MARKER_ONE"},
+      {"uuid":"00000000-0000-0000-0000-000000000002","id":2,"entry":"20260101T000000Z","status":"pending","description":"TASK_LIST_MARKER_TWO"}
+    ]"#
+        .as_slice(),
+    )
+    .unwrap();
+    app.task_report_table.columns = vec!["id".into(), "description".into()];
+    app.task_report_table.labels = vec!["ID".into(), "Description".into()];
+    app.current_selection = 0;
+    app.task_details = app.tasks.iter().map(|task| (*task.uuid(), "DETAILS_ONLY_MARKER".into())).collect();
+  }
+
+  fn region_text(buffer: &Buffer, rect: Rect) -> String {
+    (rect.y..rect.bottom())
+      .map(|y| (rect.x..rect.right()).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+      .collect::<Vec<_>>()
+      .join("\n")
+  }
+
+  #[tokio::test]
+  async fn test_annotations_pane_uses_half_screen_and_restores_task_details() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    set_annotation_test_tasks(&mut app);
+    for info_show in [false, true] {
+      for (location, width, direction) in [
+        (TaskInfoLocation::Bottom, 100, Direction::Vertical),
+        (TaskInfoLocation::Right, 200, Direction::Horizontal),
+        (TaskInfoLocation::Auto, 160, Direction::Vertical),
+        (TaskInfoLocation::Auto, 180, Direction::Horizontal),
+      ] {
+        app.config.uda_task_report_info_location = location;
+        app.task_info_location_override = None;
+        app.task_info_location_override_width = None;
+        app.task_report_info_show = info_show;
+        let mut terminal = Terminal::new(TestBackend::new(width, 27)).unwrap();
+        let report_area = Rect::new(0, 1, width, 24); // exclude navbar and command prompt
+        let split = Layout::default()
+          .direction(direction)
+          .constraints([Constraint::Percentage(50); 2])
+          .split(report_area);
+
+        app.handle_input(app.keyconfig.annotations).await.unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.mode, Mode::Tasks(Action::Report));
+        assert_eq!(app.task_report_height, split[0].height);
+        assert!(region_text(terminal.backend().buffer(), split[0]).contains("TASK_LIST_MARKER_ONE"));
+        assert!(!region_text(terminal.backend().buffer(), split[0]).contains("Annotations"));
+        assert!(region_text(terminal.backend().buffer(), split[1]).contains("Annotations — all tasks"));
+        assert!(!buffer_view(terminal.backend().buffer()).contains("DETAILS_ONLY_MARKER"));
+
+        app.handle_input(app.keyconfig.transpose).await.unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let transposed = if direction == Direction::Vertical {
+          Direction::Horizontal
+        } else {
+          Direction::Vertical
+        };
+        let transposed_split = Layout::default()
+          .direction(transposed)
+          .constraints([Constraint::Percentage(50); 2])
+          .split(report_area);
+        assert!(region_text(terminal.backend().buffer(), transposed_split[0]).contains("TASK_LIST_MARKER_ONE"));
+        assert!(region_text(terminal.backend().buffer(), transposed_split[1]).contains("Annotations — all tasks"));
+        app.handle_input(app.keyconfig.transpose).await.unwrap();
+
+        app.handle_input(app.keyconfig.annotations).await.unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.annotations.visible);
+        assert_eq!(app.task_report_info_show, info_show);
+        assert!(!buffer_view(terminal.backend().buffer()).contains("Annotations — all tasks"));
+        assert_eq!(buffer_view(terminal.backend().buffer()).contains("DETAILS_ONLY_MARKER"), info_show);
+        assert_eq!(app.task_report_height, if info_show { split[0].height } else { report_area.height });
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn test_annotations_pane_keeps_task_controls_and_zoom_switches_to_details() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    set_annotation_test_tasks(&mut app);
+    app.task_report_info_show = false;
+    app.handle_input(app.keyconfig.annotations).await.unwrap();
+    app.handle_input(app.keyconfig.down).await.unwrap();
+    assert_eq!(app.current_selection, 1);
+    app.handle_input(app.keyconfig.up).await.unwrap();
+    assert_eq!(app.current_selection, 0);
+    app.task_details_scroll = 3;
+    for key in [KeyCode::Ctrl('e'), KeyCode::Ctrl('y'), KeyCode::Ctrl('d'), KeyCode::Ctrl('u')] {
+      app.handle_input(key).await.unwrap();
+      assert_eq!(app.current_selection, 0);
+      assert_eq!(app.task_details_scroll, 3);
+    }
+    app.mode = Mode::Tasks(Action::Add);
+    app.handle_input(app.keyconfig.annotations).await.unwrap();
+    assert_eq!(app.command.as_str(), "n");
+    assert!(app.annotations.visible);
+    app.mode = Mode::Tasks(Action::Report);
+    app.handle_input(app.keyconfig.zoom).await.unwrap();
+    assert!(!app.annotations.visible);
+    assert!(app.task_report_info_show);
+    app.handle_input(app.keyconfig.zoom).await.unwrap();
+    assert!(!app.task_report_info_show);
   }
 
   #[test]

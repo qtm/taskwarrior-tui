@@ -27,7 +27,6 @@ pub trait Pane {
       Mode::Calendar => {
         app.mode = Mode::Timesheet;
       }
-      Mode::Annotations => {}
     }
   }
   fn change_focus_to_right_pane(app: &mut TaskwarriorTui) {
@@ -40,7 +39,6 @@ pub trait Pane {
           app.mode = Mode::Tasks(Action::Report);
         }
       }
-      Mode::Annotations => {}
     }
   }
 }

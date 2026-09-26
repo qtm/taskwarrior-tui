@@ -15,7 +15,7 @@ Keybindings:
 
     [: Previous view                     - Go to previous view
 
-    n: annotations                       - Toggle all-task annotations / return to previous view
+    n: annotations                       - Toggle half-screen annotations pane
 
 Keybindings for task report:
 
@@ -63,9 +63,9 @@ Keybindings for task report:
 
     A: task {selected} annotate {string} - Annotate current task
 
-    Ctrl-e: scroll down task details     - Scroll task details view down one line
+    Ctrl-e: scroll down side pane        - Scroll task details / annotations down one line
 
-    Ctrl-y: scroll up task details       - Scroll task details view up one line
+    Ctrl-y: scroll up side pane          - Scroll task details / annotations up one line
 
     !: {string}                          - Custom shell command
 
@@ -131,16 +131,21 @@ Keybindings for report switcher:
 
     Enter: task report {selected}        - Select highlighted report
 
-## Annotations view
+## Annotations pane
 
-Press `n` from Tasks, Projects, Timesheet, or Calendar to open the annotations view. Press `n` again (or `Esc`) to return to the previous view. The toggle does not intercept text while editing a command, filter, or menu search.
+Press `n` to show annotations alongside the task list in a **50/50 split**, using the same bottom/right placement as the `z` task-info pane. The task list remains visible and interactive. Annotations temporarily replace task details rather than adding a third pane. Press `n` again (or `Esc` from the task report) to restore the previous layout, including whether task details were shown.
+
+The pane follows `uda.taskwarrior-tui.task-report.info-location` (`auto`, `bottom`, or `right`); use `\` to transpose the split. Pressing `z` while annotations are visible switches the pane to the selected task's details.
+
+From Projects, Timesheet, or Calendar, `n` opens the task list with annotations; toggling it off returns to the previous view. The toggle and annotation scrolling do not intercept text while editing a command, filter, or menu search.
 
 Each entry contains one annotation and its creation date/time, with a project/task heading. Entries are sorted newest first across **all tasks**, including completed, deleted, and waiting tasks, regardless of the current report filter or active context. Only consecutive entries belonging to the same task share a heading; annotations are never reordered to force grouping. Tasks without a project show `(no project)`, and tasks without a numeric ID show their short UUID. Timestamps use your local timezone.
 
-- `j` / `k` or arrow keys: scroll down / up.
-- `J` / `K` or Page Down / Page Up: scroll one page.
-- `g` / `G` or Home / End: go to the top / bottom.
-- `r`: refresh (database changes are also picked up on normal refresh ticks).
+- `Ctrl-e` / `Ctrl-y`: scroll annotations down / up one line.
+- `Ctrl-d` / `Ctrl-u`: scroll annotations down / up one page.
+- `j` / `k`, arrows, `J` / `K`, and `g` / `G`: navigate the **task list**, as usual.
+- Task actions and filtering remain available while the pane is open.
+- `r`: refresh tasks and annotations (database changes are also picked up on normal refresh ticks).
 - `q`: quit the application.
 
 Customize the toggle with `uda.taskwarrior-tui.keyconfig.annotations` in your `.taskrc`.

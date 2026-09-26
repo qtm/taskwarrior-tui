@@ -1,4 +1,4 @@
-use std::{process::Command, time::SystemTime};
+use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 use chrono::NaiveDateTime;
@@ -7,7 +7,7 @@ use ratatui::{
   layout::{Constraint, Direction, Layout, Rect},
   style::{Modifier, Style},
   text::Line,
-  widgets::Paragraph,
+  widgets::{Block, Borders, Paragraph},
 };
 use task_hookrs::{import::import, task::Task};
 use unicode_segmentation::UnicodeSegmentation;
@@ -39,7 +39,7 @@ impl AnnotationEntry {
 
 #[derive(Default)]
 pub struct AnnotationsState {
-  pub last_refresh: Option<SystemTime>,
+  pub visible: bool,
   entries: Vec<AnnotationEntry>,
   previous_mode: Option<Mode>,
   scroll: usize,
@@ -49,20 +49,28 @@ pub struct AnnotationsState {
 }
 
 impl AnnotationsState {
-  /// This view is a detour, not part of the normal tab cycle. Never intercept typing in a prompt.
+  /// Keep the task report active while the pane is open. Never intercept typing in a prompt.
   pub fn toggle(&mut self, mode: &mut Mode) -> bool {
     match mode {
-      Mode::Annotations => {
+      Mode::Tasks(Action::Report) if self.visible => {
         *mode = self.previous_mode.take().unwrap_or(Mode::Tasks(Action::Report));
+        self.visible = false;
       }
       Mode::Tasks(Action::Report) | Mode::Projects | Mode::Timesheet | Mode::Calendar => {
         self.previous_mode = Some(mode.clone());
-        *mode = Mode::Annotations;
+        *mode = Mode::Tasks(Action::Report);
+        self.visible = true;
         self.scroll = 0;
       }
       _ => return false,
     }
     true
+  }
+
+  /// Switch back to task details without navigating away from the task report.
+  pub fn hide(&mut self) {
+    self.visible = false;
+    self.previous_mode = None;
   }
 
   pub fn refresh(&mut self, task_exe: &str) {
@@ -73,7 +81,6 @@ impl AnnotationsState {
       }
       Err(error) => self.error = Some(format!("Unable to load annotations: {error:#}")),
     }
-    self.last_refresh = Some(SystemTime::now());
   }
 
   fn load_tasks(task_exe: &str) -> Result<Vec<Task>> {
@@ -148,10 +155,17 @@ impl AnnotationsState {
   }
 
   pub fn draw(&mut self, f: &mut Frame, area: Rect, config: &Config, keys: &KeyConfig) {
+    let title = format!("Annotations — all tasks | {} annotations (local time)", self.entries.len());
+    let block = Block::default()
+      .borders(Borders::TOP)
+      .border_style(config.uda_style_title_border)
+      .title(Line::styled(title, config.uda_style_title));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
     let chunks = Layout::default()
       .direction(Direction::Vertical)
       .constraints([Constraint::Min(0), Constraint::Length(1)])
-      .split(area);
+      .split(inner);
     let body = chunks[0];
     let lines = if let Some(error) = &self.error {
       let mut lines = Vec::new();
@@ -175,31 +189,22 @@ impl AnnotationsState {
     f.render_widget(Paragraph::new(visible), body);
     let toggle = key_label(keys.annotations);
     let refresh = key_label(keys.refresh);
-    let footer = format!(
-      "{toggle}/Esc: back | {refresh}: refresh | {}/{}: scroll | {} annotations (local time)",
-      key_label(keys.down),
-      key_label(keys.up),
-      self.entries.len()
-    );
+    let footer = format!("{toggle}/Esc: close | Ctrl-e/y: scroll | {refresh}: refresh");
     f.render_widget(Paragraph::new(footer).style(config.uda_style_command), chunks[1]);
   }
 
-  pub fn handle_navigation(&mut self, input: KeyCode, keys: &KeyConfig) {
+  /// Use secondary-pane controls so ordinary movement still selects tasks.
+  pub fn handle_navigation(&mut self, input: KeyCode) -> bool {
     let page = self.viewport_height.max(1);
-    if input == keys.down || input == KeyCode::Down {
-      self.scroll = self.scroll.saturating_add(1);
-    } else if input == keys.up || input == KeyCode::Up {
-      self.scroll = self.scroll.saturating_sub(1);
-    } else if input == keys.page_down || input == KeyCode::PageDown {
-      self.scroll = self.scroll.saturating_add(page);
-    } else if input == keys.page_up || input == KeyCode::PageUp {
-      self.scroll = self.scroll.saturating_sub(page);
-    } else if input == keys.go_to_top || input == KeyCode::Home {
-      self.scroll = 0;
-    } else if input == keys.go_to_bottom || input == KeyCode::End {
-      self.scroll = self.max_scroll;
+    match input {
+      KeyCode::Ctrl('e') => self.scroll = self.scroll.saturating_add(1),
+      KeyCode::Ctrl('y') => self.scroll = self.scroll.saturating_sub(1),
+      KeyCode::Ctrl('d') => self.scroll = self.scroll.saturating_add(page),
+      KeyCode::Ctrl('u') => self.scroll = self.scroll.saturating_sub(page),
+      _ => return false,
     }
     self.scroll = self.scroll.min(self.max_scroll);
+    true
   }
 }
 
@@ -305,9 +310,11 @@ mod tests {
       let mut state = AnnotationsState::default();
       let mut mode = original.clone();
       assert!(state.toggle(&mut mode));
-      assert_eq!(mode, Mode::Annotations);
+      assert_eq!(mode, Mode::Tasks(Action::Report));
+      assert!(state.visible);
       assert!(state.toggle(&mut mode));
       assert_eq!(mode, original);
+      assert!(!state.visible);
       assert!(state.previous_mode.is_none());
     }
     for action in [
@@ -319,32 +326,48 @@ mod tests {
       Action::ReportMenu,
       Action::Error,
     ] {
-      let mut state = AnnotationsState::default();
-      let mut mode = Mode::Tasks(action);
-      assert!(!state.toggle(&mut mode));
-      assert_eq!(mode, Mode::Tasks(action));
+      for visible in [false, true] {
+        let mut state = AnnotationsState {
+          visible,
+          ..Default::default()
+        };
+        let mut mode = Mode::Tasks(action);
+        assert!(!state.toggle(&mut mode));
+        assert_eq!(mode, Mode::Tasks(action));
+        assert_eq!(state.visible, visible);
+      }
     }
   }
 
   #[test]
   fn annotation_navigation_clamps_and_supports_long_histories() {
-    let keys = KeyConfig::default();
     let mut state = AnnotationsState {
       max_scroll: 100_000,
       viewport_height: 20,
       ..Default::default()
     };
-    state.handle_navigation(keys.up, &keys);
+    assert!(state.handle_navigation(KeyCode::Ctrl('y')));
     assert_eq!(state.scroll, 0);
-    state.handle_navigation(keys.page_down, &keys);
-    assert_eq!(state.scroll, 20);
-    state.handle_navigation(keys.go_to_bottom, &keys);
-    state.handle_navigation(keys.down, &keys);
+    assert!(state.handle_navigation(KeyCode::Ctrl('e')));
+    assert_eq!(state.scroll, 1);
+    assert!(state.handle_navigation(KeyCode::Ctrl('d')));
+    assert_eq!(state.scroll, 21);
+    state.scroll = usize::MAX;
+    state.handle_navigation(KeyCode::Ctrl('e'));
     assert_eq!(state.scroll, 100_000);
-    state.handle_navigation(keys.page_up, &keys);
+    state.handle_navigation(KeyCode::Ctrl('u'));
     assert_eq!(state.scroll, 99_980);
-    state.handle_navigation(keys.go_to_top, &keys);
-    assert_eq!(state.scroll, 0);
+    for key in [
+      KeyCode::Char('j'),
+      KeyCode::Char('k'),
+      KeyCode::Down,
+      KeyCode::Up,
+      KeyCode::PageDown,
+      KeyCode::Home,
+    ] {
+      assert!(!state.handle_navigation(key));
+      assert_eq!(state.scroll, 99_980);
+    }
   }
 
   fn render(state: &mut AnnotationsState, width: u16, height: u16) -> String {
@@ -378,7 +401,9 @@ mod tests {
     assert!(output.find("newest").unwrap() < output.find("adjacent").unwrap());
     assert!(output.find("adjacent").unwrap() < output.find("middle").unwrap());
     assert!(output.find("middle").unwrap() < output.find("oldest").unwrap());
-    assert!(output.contains("n/Esc: back"));
+    assert!(output.contains("Annotations — all tasks"));
+    assert!(output.contains("n/Esc: close"));
+    assert!(output.contains("Ctrl-e/y: scroll"));
     assert!(output.contains("5 annotations (local time)"));
   }
 
@@ -394,7 +419,7 @@ mod tests {
     state.entries[0].description = format!("{}\nLAST", "Long annotation 猫 ".repeat(12));
     render(&mut state, 12, 6);
     assert!(state.max_scroll > 6);
-    state.handle_navigation(KeyCode::End, &KeyConfig::default());
+    state.scroll = state.max_scroll;
     assert!(render(&mut state, 12, 6).contains("LAST"));
     render(&mut state, 100, 50);
     assert_eq!(state.scroll, 0);

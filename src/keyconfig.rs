@@ -30,6 +30,7 @@ pub struct KeyConfig {
   pub log: KeyCode,
   pub add: KeyCode,
   pub annotate: KeyCode,
+  pub annotations: KeyCode,
   pub help: KeyCode,
   pub filter: KeyCode,
   pub zoom: KeyCode,
@@ -79,6 +80,7 @@ impl Default for KeyConfig {
       log: KeyCode::Char('l'),
       add: KeyCode::Char('a'),
       annotate: KeyCode::Char('A'),
+      annotations: KeyCode::Char('n'),
       help: KeyCode::Char('?'),
       filter: KeyCode::Char('/'),
       zoom: KeyCode::Char('z'),
@@ -135,6 +137,7 @@ impl KeyConfig {
     let log = Self::get_config("uda.taskwarrior-tui.keyconfig.log", data);
     let add = Self::get_config("uda.taskwarrior-tui.keyconfig.add", data);
     let annotate = Self::get_config("uda.taskwarrior-tui.keyconfig.annotate", data);
+    let annotations = Self::get_config("uda.taskwarrior-tui.keyconfig.annotations", data);
     let filter = Self::get_config("uda.taskwarrior-tui.keyconfig.filter", data);
     let zoom = Self::get_config("uda.taskwarrior-tui.keyconfig.zoom", data);
     let transpose = Self::get_config("uda.taskwarrior-tui.keyconfig.transpose", data);
@@ -175,6 +178,7 @@ impl KeyConfig {
     self.log = log.unwrap_or(self.log);
     self.add = add.unwrap_or(self.add);
     self.annotate = annotate.unwrap_or(self.annotate);
+    self.annotations = annotations.unwrap_or(self.annotations);
     self.filter = filter.unwrap_or(self.filter);
     self.zoom = zoom.unwrap_or(self.zoom);
     self.transpose = transpose.unwrap_or(self.transpose);
@@ -197,7 +201,7 @@ impl KeyConfig {
   }
 
   pub fn check(&self) -> Result<()> {
-    let mut elements = vec![
+    let elements = [
       &self.quit,
       &self.refresh,
       &self.go_to_bottom,
@@ -220,6 +224,7 @@ impl KeyConfig {
       &self.log,
       &self.add,
       &self.annotate,
+      &self.annotations,
       &self.help,
       &self.filter,
       &self.zoom,
@@ -229,9 +234,7 @@ impl KeyConfig {
       &self.next_tab,
       &self.previous_tab,
     ];
-    let l = elements.len();
-    elements.dedup();
-    if l == elements.len() {
+    if elements.iter().enumerate().all(|(index, key)| !elements[..index].contains(key)) {
       Ok(())
     } else {
       Err(anyhow!("Duplicate keys found in key config"))
@@ -268,4 +271,19 @@ fn has_just_one_char(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn annotations_key_defaults_to_n_and_can_be_remapped() {
+    assert_eq!(KeyConfig::default().annotations, KeyCode::Char('n'));
+    let keys = KeyConfig::new("uda.taskwarrior-tui.keyconfig.annotations B").unwrap();
+    assert_eq!(keys.annotations, KeyCode::Char('B'));
+    assert_eq!(keys.annotate, KeyCode::Char('A'));
+  }
+
+  #[test]
+  fn annotations_key_rejects_conflicts_with_other_bindings() {
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.annotations j").is_err());
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.up n").is_err());
+    assert!(KeyConfig::default().check().is_ok());
+  }
 }

@@ -47,6 +47,8 @@ fn keycode_for(name: &str, kc: &KeyConfig) -> KeyCode {
     "delete" => kc.delete,
     "zoom" => kc.zoom,
     "annotate" => kc.annotate,
+    "annotations" => kc.annotations,
+    "refresh" => kc.refresh,
     "shell" => kc.shell,
     "shortcut0" => kc.shortcut0,
     "shortcut1" => kc.shortcut1,
@@ -123,5 +125,19 @@ impl Widget for &Help {
       .alignment(Alignment::Left)
       .scroll((self.scroll, 0))
       .render(area, buf);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn annotations_help_uses_configured_toggle_and_refresh_keys() {
+    let keys = KeyConfig::new("uda.taskwarrior-tui.keyconfig.annotations B\nuda.taskwarrior-tui.keyconfig.refresh F").unwrap();
+    let help = Help::new(&keys);
+    assert!(help.text.contains("B / Esc: back"));
+    assert!(help.text.contains("F: refresh"));
+    assert!(!help.text.contains("{{annotations}}"));
   }
 }

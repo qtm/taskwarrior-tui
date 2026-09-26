@@ -15,6 +15,8 @@ Keybindings:
 
     [: Previous view                     - Go to previous view
 
+    n: annotations                       - Toggle all-task annotations / return to previous view
+
 Keybindings for task report:
 
     /: task {string}                     - Filter task report
@@ -128,6 +130,20 @@ Keybindings for report switcher:
     k: {selected-=1}                     - Move back a report
 
     Enter: task report {selected}        - Select highlighted report
+
+## Annotations view
+
+Press `n` from Tasks, Projects, Timesheet, or Calendar to open the annotations view. Press `n` again (or `Esc`) to return to the previous view. The toggle does not intercept text while editing a command, filter, or menu search.
+
+Each entry contains one annotation and its creation date/time, with a project/task heading. Entries are sorted newest first across **all tasks**, including completed, deleted, and waiting tasks, regardless of the current report filter or active context. Only consecutive entries belonging to the same task share a heading; annotations are never reordered to force grouping. Tasks without a project show `(no project)`, and tasks without a numeric ID show their short UUID. Timestamps use your local timezone.
+
+- `j` / `k` or arrow keys: scroll down / up.
+- `J` / `K` or Page Down / Page Up: scroll one page.
+- `g` / `G` or Home / End: go to the top / bottom.
+- `r`: refresh (database changes are also picked up on normal refresh ticks).
+- `q`: quit the application.
+
+Customize the toggle with `uda.taskwarrior-tui.keyconfig.annotations` in your `.taskrc`.
 
 Keybindings for calendar:
 

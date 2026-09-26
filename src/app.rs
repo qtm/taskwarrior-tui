@@ -50,6 +50,7 @@ use crate::{
   keyconfig::KeyConfig,
   pane::{
     Pane,
+    annotations::AnnotationsState,
     context::{ContextDetails, ContextsState},
     project::ProjectsState,
     report::ReportsState,
@@ -133,6 +134,7 @@ pub enum Mode {
   Projects,
   Timesheet,
   Calendar,
+  Annotations,
 }
 
 pub struct TaskwarriorTui {
@@ -175,6 +177,7 @@ pub struct TaskwarriorTui {
   pub show_completion_pane: bool,
   pub report: String,
   pub projects: ProjectsState,
+  pub annotations: AnnotationsState,
   pub contexts: ContextsState,
   pub reports: ReportsState,
   pub task_version: Versioning,
@@ -275,6 +278,7 @@ impl TaskwarriorTui {
       show_completion_pane: false,
       report: report.to_string(),
       projects: ProjectsState::new(),
+      annotations: AnnotationsState::default(),
       contexts: ContextsState::new(),
       reports: ReportsState::new(),
       task_version,
@@ -492,17 +496,23 @@ impl TaskwarriorTui {
       Mode::Projects => self.draw_projects(f, main_layout),
       Mode::Timesheet => self.draw_timesheet(f, main_layout),
       Mode::Calendar => self.draw_calendar(f, main_layout),
+      Mode::Annotations => self.annotations.draw(f, main_layout, &self.config, &self.keyconfig),
     }
   }
 
   fn draw_tabs(&self, f: &mut Frame, layout: Rect) {
-    let titles: Vec<&str> = vec!["Tasks", "Projects", "Timesheet", "Calendar"];
+    let titles = if self.mode == Mode::Annotations {
+      vec!["Annotations"]
+    } else {
+      vec!["Tasks", "Projects", "Timesheet", "Calendar"]
+    };
     let tab_names: Vec<_> = titles.into_iter().map(Line::from).collect();
     let selected_tab = match self.mode {
       Mode::Tasks(_) => 0,
       Mode::Projects => 1,
       Mode::Timesheet => 2,
       Mode::Calendar => 3,
+      Mode::Annotations => 0,
     };
     let navbar_block = Block::default().style(self.config.uda_style_navbar);
     let context = Line::from(vec![
@@ -516,6 +526,11 @@ impl TaskwarriorTui {
       }),
       Span::from("]"),
     ]);
+    let context = if self.mode == Mode::Annotations {
+      Line::from("all tasks")
+    } else {
+      context
+    };
     let tabs = Tabs::new(tab_names)
       .block(navbar_block.clone())
       .select(selected_tab)
@@ -1662,6 +1677,12 @@ impl TaskwarriorTui {
 
   pub async fn update(&mut self, force: bool) -> Result<()> {
     trace!("self.update({:?});", force);
+    if self.mode == Mode::Annotations {
+      if force || self.tasks_changed_since(self.annotations.last_refresh).unwrap_or(true) {
+        self.annotations.refresh(&self.task_exe);
+      }
+      return Ok(());
+    }
     if force || self.dirty || self.tasks_changed_since(self.last_export).unwrap_or(true) {
       self.get_context()?;
       let task_uuids = self.selected_task_uuids();
@@ -3040,7 +3061,24 @@ impl TaskwarriorTui {
   }
 
   pub async fn handle_input(&mut self, input: KeyCode) -> Result<()> {
+    if input == self.keyconfig.annotations && self.annotations.toggle(&mut self.mode) {
+      if self.mode == Mode::Annotations {
+        self.update(true).await?;
+      }
+      return Ok(());
+    }
     match self.mode {
+      Mode::Annotations => {
+        if input == KeyCode::Esc {
+          self.annotations.toggle(&mut self.mode);
+        } else if input == self.keyconfig.quit || input == KeyCode::Ctrl('c') {
+          self.should_quit = true;
+        } else if input == self.keyconfig.refresh {
+          self.update(true).await?;
+        } else {
+          self.annotations.handle_navigation(input, &self.keyconfig);
+        }
+      }
       Mode::Tasks(_) => {
         self.handle_input_by_task_mode(input).await?;
       }
@@ -4576,6 +4614,47 @@ mod tests {
       view.push('\n');
     }
     view
+  }
+
+  #[tokio::test]
+  async fn test_annotations_toggle_preserves_previous_view_and_report_state() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    app.filter.update("project:annotations-test-no-match", 0, &mut app.changes);
+    app.timesheet_scroll = 7;
+    app.calendar_year = 2042;
+    let tasks: Vec<_> = app.tasks.iter().map(|task| *task.uuid()).collect();
+    let context = app.current_context.clone();
+    let last_export = app.last_export;
+    let selection = app.current_selection;
+    let previous_error_mode = Some(Mode::Tasks(Action::Filter));
+    app.previous_mode = previous_error_mode.clone();
+
+    for original in [Mode::Tasks(Action::Report), Mode::Projects, Mode::Timesheet, Mode::Calendar] {
+      app.mode = original.clone();
+      app.handle_input(app.keyconfig.annotations).await.unwrap();
+      assert_eq!(app.mode, Mode::Annotations);
+      app.update(true).await.unwrap();
+      app.handle_input(app.keyconfig.annotations).await.unwrap();
+      assert_eq!(app.mode, original);
+      assert_eq!(app.filter.as_str(), "project:annotations-test-no-match");
+      assert_eq!(app.tasks.iter().map(|task| *task.uuid()).collect::<Vec<_>>(), tasks);
+      assert_eq!(app.current_context, context);
+      assert_eq!(app.current_selection, selection);
+      assert_eq!(app.timesheet_scroll, 7);
+      assert_eq!(app.calendar_year, 2042);
+      assert_eq!(app.last_export, last_export);
+      assert_eq!(app.previous_mode, previous_error_mode);
+    }
+
+    app.keyconfig.annotations = KeyCode::Char('B');
+    app.handle_input(KeyCode::Char('B')).await.unwrap();
+    assert_eq!(app.mode, Mode::Annotations);
+    app.handle_input(KeyCode::Esc).await.unwrap();
+    assert_eq!(app.mode, Mode::Calendar);
+    app.mode = Mode::Tasks(Action::Add);
+    app.handle_input(KeyCode::Char('B')).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Add));
+    assert_eq!(app.command.as_str(), "B");
   }
 
   #[test]

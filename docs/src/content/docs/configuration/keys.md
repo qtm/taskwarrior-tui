@@ -28,6 +28,7 @@ uda.taskwarrior-tui.keyconfig.shell=!
 uda.taskwarrior-tui.keyconfig.log=l
 uda.taskwarrior-tui.keyconfig.add=a
 uda.taskwarrior-tui.keyconfig.annotate=A
+uda.taskwarrior-tui.keyconfig.annotations=n
 uda.taskwarrior-tui.keyconfig.filter=/
 uda.taskwarrior-tui.keyconfig.zoom=z
 uda.taskwarrior-tui.keyconfig.context-menu=c

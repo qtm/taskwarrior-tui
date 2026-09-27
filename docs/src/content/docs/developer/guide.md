@@ -43,6 +43,16 @@ mise run taskwarrior-tui:cargo-test
 
 `mise run taskwarrior-tui:cargo-test` fetches `taskwarrior-testdata` at a pinned commit for deterministic runs.
 
+### Live terminal regressions (Unix)
+
+```bash
+cargo build --locked
+python3 scripts/test-editor-resume.py --task /path/to/taskwarrior-3.x
+python3 scripts/test-checklists.py --task /path/to/taskwarrior-3.x
+```
+
+Both scripts use disposable task databases and fake editors/clipboard helpers, not personal data. The editor test covers no-op and saved edits, editor failure, resizing while editing, and successful/failed shortcuts. It deliberately withholds cursor-position replies: resuming the full-screen TUI must redraw without querying the cursor while the asynchronous input reader is active.
+
 ## Building the CLI
 
 ```bash

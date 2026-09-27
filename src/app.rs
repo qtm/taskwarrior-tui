@@ -379,7 +379,11 @@ impl TaskwarriorTui {
   pub async fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     loop {
       if self.requires_redraw {
-        terminal.clear()?;
+        // This is a fullscreen terminal: resize clears it and invalidates the
+        // previous frame even if the dimensions are unchanged. Unlike clear(),
+        // it does not query the cursor, which can time out with EventStream
+        // already reading input after an external editor/shortcut returns.
+        terminal.resize(terminal.size()?.into())?;
         self.requires_redraw = false;
       }
       terminal.draw(|f| self.draw(f))?;

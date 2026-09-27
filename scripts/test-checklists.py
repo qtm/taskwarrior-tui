@@ -27,11 +27,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Terminal:
-    def __init__(self, executable, env):
+    def __init__(self, executable, env, respond_to_cursor_queries=True):
         self.rows, self.cols = 48, 120
         self.screen = [[' '] * self.cols for _ in range(self.rows)]
         self.cursor = [0, 0]
         self.keyboard_requests = []
+        self.cursor_queries = 0
+        self.screen_clears = 0
+        self.respond_to_cursor_queries = respond_to_cursor_queries
         self.transcript = ''
         self.decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         self.pid, self.fd = pty.fork()
@@ -69,10 +72,11 @@ class Terminal:
                 values = [int(v or 0) for v in params.split(';')] if params else [0]
                 n = values[0] or 1
                 if op == 'n' and values[0] == 6:
-                    # Ratatui queries the cursor when clearing after a resume.
-                    row = min(max(self.cursor[0] + 1, 1), self.rows)
-                    col = min(max(self.cursor[1] + 1, 1), self.cols)
-                    os.write(self.fd, f'\x1b[{row};{col}R'.encode())
+                    self.cursor_queries += 1
+                    if self.respond_to_cursor_queries:
+                        row = min(max(self.cursor[0] + 1, 1), self.rows)
+                        col = min(max(self.cursor[1] + 1, 1), self.cols)
+                        os.write(self.fd, f'\x1b[{row};{col}R'.encode())
                 elif op in ('H', 'f'):
                     self.cursor = [n - 1, ((values[1] if len(values) > 1 else 1) or 1) - 1]
                 elif op == 'G': self.cursor[1] = n - 1
@@ -81,6 +85,7 @@ class Terminal:
                 elif op == 'C': self.cursor[1] += n
                 elif op == 'D': self.cursor[1] = max(0, self.cursor[1] - n)
                 elif op == 'J' and values[0] == 2:
+                    self.screen_clears += 1
                     self.screen = [[' '] * self.cols for _ in range(self.rows)]
                 elif op == 'K' and self.cursor[0] < self.rows:
                     start = 0 if values[0] in (1, 2) else self.cursor[1]
@@ -319,6 +324,7 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             terminal.finished = bool(pid)
             assert pid and os.waitstatus_to_exitcode(status) == 0, (pid, status)
             assert terminal.keyboard_requests == ['>1', '<1', '>1', '<1'], 'Keyboard reporting was not restored'
+            assert terminal.cursor_queries == 0, 'Full-screen redraw must not query the cursor'
             print('PASS: pane restoration, transpose, details switch, and clean exit', flush=True)
         except Exception:
             Path('/tmp/taskwarrior-checklists-failed-screen.txt').write_text(terminal.read(0.1))

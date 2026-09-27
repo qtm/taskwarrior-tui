@@ -172,6 +172,11 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
         two = '00000000-0000-0000-0000-000000000002'
         data = [dict(uuid=uuid, entry='20260101T000000Z', status='pending', description=name, project='work')
                 for uuid, name in [(one, 'TASK_ONE'), (two, 'TASK_TWO')]]
+        data[0]['annotations'] = [
+            dict(entry='20200101T120000Z', description='OLD_TASK_ONE_NOTE'),
+            dict(entry='20200102T120000Z', description='NEW_TASK_ONE_NOTE'),
+        ]
+        data[1]['annotations'] = [dict(entry='20200103T120000Z', description='OTHER_TASK_NOTE')]
         subprocess.run([task, 'import'], input=json.dumps(data), text=True, env=env, capture_output=True, check=True)
 
         def command(*parts):
@@ -191,6 +196,7 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             assert '>1' in terminal.keyboard_requests, 'Modified-key reporting was not requested'
             screen = terminal.send('I', 0.8)
             assert 'Import preview' in screen and '5/13 complete' in screen, screen
+            assert 'Annotations — current task' not in screen and 'NEW_TASK_ONE_NOTE' not in screen
             assert not document()['lists']
             screen = terminal.finish_edit()
             first = document()['lists'][0]
@@ -198,6 +204,26 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             assert '  - [x] Добавить tech' in screen and '5/13 complete' in screen, screen
             assert '5/13' in screen.split('Checklists')[0], screen
             print('PASS: clipboard preview, Cyrillic nesting, attachment, and report progress', flush=True)
+
+            screen = terminal.send('\x04')  # Scroll annotations with checklist focus.
+            assert 'Annotations — current task' in screen and '2 annotations (local time)' in screen, screen
+            assert screen.index('NEW_TASK_ONE_NOTE') < screen.index('OLD_TASK_ONE_NOTE'), screen
+            assert 'OTHER_TASK_NOTE' not in screen, screen
+            terminal.send('\t')
+            screen = terminal.send('j')  # Follow the highlighted task, even with no checklists.
+            assert 'No checklists.' in screen and 'OTHER_TASK_NOTE' in screen, screen
+            assert 'TASK_ONE_NOTE' not in screen, screen
+            terminal.send('k')
+            before_annotation = document()
+            command(one, 'annotate', 'REFRESHED_TASK_ONE_NOTE')
+            terminal.send('r', 0.8)
+            screen = terminal.send('\x04')  # Task focus has the same annotation scroll controls.
+            assert screen.index('REFRESHED_TASK_ONE_NOTE') < screen.index('NEW_TASK_ONE_NOTE'), screen
+            assert '3 annotations (local time)' in screen and 'OTHER_TASK_NOTE' not in screen, screen
+            assert document() == before_annotation
+            terminal.send('\x15')
+            terminal.send('\t')
+            print('PASS: task-only annotations below checklists, newest first, scrolling, task switching, and refresh', flush=True)
 
             terminal.send(' ')
             changed = document()['lists'][0]['items']
@@ -312,6 +338,9 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             screen = terminal.send('z', 0.8)
             assert 'Checklists —' not in screen and 'Annotations — all tasks' not in screen, screen
             assert all(t['status'] == 'pending' for t in tasks().values())
+            assert {note['description'] for note in tasks()[one]['annotations']} == {
+                'OLD_TASK_ONE_NOTE', 'NEW_TASK_ONE_NOTE', 'REFRESHED_TASK_ONE_NOTE',
+            }, 'Checklist edits must preserve task annotations'
             terminal.send('1', 0.8)  # Suspend/resume around a harmless external shortcut.
             terminal.wait_for(lambda screen: terminal.keyboard_requests.count('>1') == 2 and 'TASK_ONE' in screen)
             assert terminal.keyboard_requests == ['>1', '<1', '>1'], terminal.keyboard_requests

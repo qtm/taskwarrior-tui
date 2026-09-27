@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
-use super::annotations::{push_wrapped, push_wrapped_spans};
+use super::annotations::{AnnotationsState, push_wrapped, push_wrapped_spans};
 use crate::{
   action::Action,
   app::{Mode, TaskwarriorTui, handle_movement},
@@ -543,6 +543,26 @@ impl ChecklistsState {
     if let Some(error) = &self.error {
       push_wrapped(&mut lines, error, body.width, "", config.uda_style_command_error);
     }
+    // Keep import previews about the draft only. In the normal pane, annotations
+    // share the checklist's scroll area but never its item selection/highlight.
+    if preview_scroll.is_none()
+      && let Some(task) = &self.task
+    {
+      let count = task.annotations().map_or(0, Vec::len);
+      lines.push(Line::default());
+      push_wrapped(
+        &mut lines,
+        &format!("Annotations — current task | {count} annotations (local time)"),
+        body.width,
+        "",
+        config.uda_style_title,
+      );
+      if count == 0 {
+        push_wrapped(&mut lines, "No annotations found.", body.width, "", Style::default());
+      } else {
+        lines.extend(AnnotationsState::task_lines(task, body.width, config));
+      }
+    }
     let max_scroll = lines.len().saturating_sub(self.viewport.max(1));
     if let Some(scroll) = preview_scroll {
       self.scroll = scroll.min(max_scroll);
@@ -569,7 +589,7 @@ impl ChecklistsState {
       error.clone()
     } else if self.focused {
       format!(
-        "Space: check | {}/o/{}/{}: items | >/<: nest | Alt-j/k: move | [/]: lists | {}: import | Tab: tasks",
+        "Ctrl-e/y: scroll | Space: check | {}/o/{}/{}: items | >/<: nest | Alt-j/k: move | [/]: lists | {}: import | Tab: tasks",
         key_label(keys.add),
         key_label(keys.edit),
         key_label(keys.delete),
@@ -577,7 +597,7 @@ impl ChecklistsState {
       )
     } else {
       format!(
-        "Tab: focus checklist | task keys remain active | {}/Esc: close",
+        "Tab: focus checklist | Ctrl-e/y: scroll | task keys remain active | {}/Esc: close",
         key_label(keys.checklist)
       )
     };
@@ -988,6 +1008,164 @@ mod tests {
         .modifier
         .contains(Modifier::REVERSED | Modifier::DIM | Modifier::SLOW_BLINK)
     );
+  }
+
+  fn annotated_task() -> Task {
+    let document = Document {
+      version: 1,
+      lists: vec![Checklist::from_markdown("- [x] Done\n- [ ] Tail").unwrap()],
+    };
+    serde_json::from_value(serde_json::json!({
+      "uuid": "00000000-0000-0000-0000-000000000001", "id": 1,
+      "entry": "20260101T000000Z", "status": "pending", "description": "Annotated task", "project": "work.client",
+      "tuichecklist": document.encode().unwrap(),
+      "annotations": [
+        {"entry": "20260101T120000Z", "description": "Oldest note\nПродолжение 猫"},
+        {"entry": "20260103T120000Z", "description": "Newest B"},
+        {"entry": "20260103T120000Z", "description": "Newest A"}
+      ]
+    }))
+    .unwrap()
+  }
+
+  fn buffer_text(buffer: &Buffer) -> String {
+    (0..buffer.area.height)
+      .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+      .collect::<Vec<_>>()
+      .join("\n")
+  }
+
+  #[test]
+  fn task_annotations_follow_checklist_with_the_exact_timeline_styles_and_order() {
+    use ratatui::widgets::Widget;
+    let (mut state, mut config) = selection_fixture();
+    let task = annotated_task();
+    state.sync_task(Some(task.clone()));
+    config.uda_style_title = Style::default().fg(Color::Cyan);
+    config.project_title_styles.insert("work".into(), Style::default().fg(Color::Green));
+    config.color.insert("color.label".into(), Style::default().fg(Color::Yellow));
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    let section = row_with(&buffer, "Annotations — current task | 3 annotations (local time)");
+    assert!(section > row_with(&buffer, "- [ ] Tail"));
+    assert!(row_with(&buffer, "Newest A") < row_with(&buffer, "Newest B"));
+    assert!(row_with(&buffer, "Newest B") < row_with(&buffer, "Oldest note"));
+    assert!(buffer_text(&buffer).contains("Продолжение 猫"));
+    assert_eq!(state.document.progress(), (1, 2));
+    // Compare every rendered cell, including metadata, local dates, indentation,
+    // project-only colors and default annotation text (no checkbox highlight).
+    let lines = AnnotationsState::task_lines(&task, 100, &config);
+    let mut expected = Buffer::empty(Rect::new(0, 0, 100, lines.len() as u16));
+    Paragraph::new(lines).render(expected.area, &mut expected);
+    for y in 0..expected.area.height {
+      for x in 0..100 {
+        assert_eq!(buffer[(x, section + 1 + y)], expected[(x, y)], "({x}, {y})");
+      }
+    }
+    assert_eq!(buffer[(0, section + 1)].fg, Color::Green);
+    assert_eq!(buffer[(12, section + 1)].fg, Color::Cyan);
+    assert_eq!(buffer[(2, section + 2)].fg, Color::Yellow);
+    assert_eq!(buffer[(4, section + 3)].fg, Color::Reset);
+  }
+
+  #[test]
+  fn task_annotations_refresh_without_a_checklist_change_and_do_not_leak_between_tasks() {
+    let (mut state, config) = selection_fixture();
+    let mut task = annotated_task();
+    state.sync_task(Some(task.clone()));
+    state.selected = Some(state.document.lists[0].items[1].id);
+    let selected = state.selected;
+    let raw = state.raw.clone();
+    state.manual_scroll = true;
+    state.scroll = 1;
+    task
+      .annotations_mut()
+      .unwrap()
+      .push(serde_json::from_value(serde_json::json!({"entry": "20260105T000000Z", "description": "Refreshed note"})).unwrap());
+    state.sync_task(Some(task.clone()));
+    assert_eq!(state.raw, raw);
+    assert_eq!(state.selected, selected);
+    assert_eq!(state.scroll, 1);
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    assert!(row_with(&buffer, "Refreshed note") < row_with(&buffer, "Newest A"));
+    task.annotations_mut().unwrap().clear();
+    state.sync_task(Some(task));
+    let text = buffer_text(&render_selection(&mut terminal, &mut state, &config));
+    assert!(text.contains("No annotations found.") && text.contains("0 annotations"));
+    assert!(!text.contains("Refreshed note") && !text.contains("Oldest note"));
+
+    let other: Task = serde_json::from_value(serde_json::json!({
+      "uuid": "00000000-0000-0000-0000-000000000002", "entry": "20260101T000000Z",
+      "status": "pending", "description": "Other task",
+      "annotations": [{"entry": "20260106T000000Z", "description": "Other task only"}]
+    }))
+    .unwrap();
+    state.sync_task(Some(annotated_task()));
+    state.begin(EditKind::AddList, "Draft").unwrap();
+    state.sync_task(Some(other.clone()));
+    let text = buffer_text(&render_selection(&mut terminal, &mut state, &config));
+    assert!(
+      text.contains("Oldest note") && !text.contains("Other task only"),
+      "Draft keeps its owning task"
+    );
+    state.editor = None;
+    state.sync_task(Some(other));
+    let text = buffer_text(&render_selection(&mut terminal, &mut state, &config));
+    assert!(text.contains("Other task only") && text.contains("No checklists."));
+    assert!(text.contains("(no project) / [00000000] Other task"));
+    assert!(!text.contains("Oldest note") && !text.contains("Annotated task"));
+    assert_eq!(state.scroll, 0);
+    state.sync_task(None);
+    let text = buffer_text(&render_selection(&mut terminal, &mut state, &config));
+    assert!(text.contains("Select a task first.") && !text.contains("Annotations — current task"));
+  }
+
+  #[test]
+  fn annotations_remain_readable_with_missing_empty_or_invalid_checklists_but_not_in_import_preview() {
+    let (mut state, config) = selection_fixture();
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    for raw in [None, Some("not json"), Some(r#"{"version":1,"lists":[]}"#)] {
+      let mut task = annotated_task();
+      task.uda_mut().remove(checklist::UDA);
+      if let Some(raw) = raw {
+        task.uda_mut().insert(checklist::UDA.into(), task_hookrs::uda::UDAValue::Str(raw.into()));
+      }
+      state.sync_task(Some(task));
+      let buffer = render_selection(&mut terminal, &mut state, &config);
+      assert!(row_with(&buffer, "Oldest note") > row_with(&buffer, "Annotations — current task"));
+    }
+    state.sync_task(Some(annotated_task()));
+    state.begin(EditKind::Import, "- [ ] Draft only").unwrap();
+    let text = buffer_text(&render_selection(&mut terminal, &mut state, &config));
+    assert!(text.contains("Import preview") && text.contains("Draft only"));
+    assert!(!text.contains("Annotations — current task") && !text.contains("Oldest note"));
+  }
+
+  #[test]
+  fn long_task_annotations_wrap_scroll_and_resize_without_selecting_them() {
+    let (mut state, config) = selection_fixture();
+    let mut task = annotated_task();
+    *task.annotations_mut().unwrap()[0].description_mut() = format!("{}\nANNOTATION_END", "Описание 猫 e\u{301} ".repeat(30));
+    state.sync_task(Some(task));
+    let selected = state.selected;
+    state.manual_scroll = true;
+    state.scroll = usize::MAX;
+    let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    assert!(state.scroll > 10);
+    let end = row_with(&buffer, "ANNOTATION_END");
+    assert!(!buffer[(4, end)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(state.selected, selected);
+    terminal.backend_mut().resize(100, 50);
+    render_selection(&mut terminal, &mut state, &config);
+    assert_eq!(state.scroll, 0);
+    for width in 0..=4 {
+      for height in 0..=3 {
+        terminal.backend_mut().resize(width, height);
+        render_selection(&mut terminal, &mut state, &config);
+      }
+    }
   }
 
   fn item_editor(text: &str) -> Editor {

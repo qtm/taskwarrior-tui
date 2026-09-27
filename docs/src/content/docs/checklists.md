@@ -27,6 +27,12 @@ The pane displays literal Markdown task-list markers, nested indentation, and pr
 
 **Checkboxes are independent:** checking a parent does not check its children, and finishing all children does not check the parent. Progress counts every item, including parent items. Finishing a checklist does not complete its task.
 
+## Task annotations
+
+Below the displayed checklist, the pane shows **only the highlighted task's annotations**, newest first. They use the same project/task headings, local timestamps, colors, indentation, and Unicode wrapping as the all-task annotation view (`n`). Annotations also remain available when the task has no checklists.
+
+Use **Ctrl-e/Ctrl-y** to scroll down/up or **Ctrl-d/Ctrl-u** for a page, with either task or checklist focus. Scrolling does not change the selected checkbox; annotations are read-only here and never count toward checklist progress. Switching tasks updates both sections; `r` refreshes them. Import previews show only the draft, without annotations.
+
 ## Clipboard support
 
 - **macOS:** `pbpaste` (included with macOS).
@@ -115,8 +121,8 @@ These keys apply when the **checklist pane has focus**:
 | [ / ] | Previous / next named checklist |
 | A / E / X | Add / rename / confirm deletion of an entire list |
 | I | Import another checklist from the clipboard |
-| Ctrl-e / Ctrl-y | Scroll down / up without changing selection |
-| Ctrl-d / Ctrl-u | Scroll by a page without changing selection |
+| Ctrl-e / Ctrl-y | Scroll items and task annotations down / up without changing selection |
+| Ctrl-d / Ctrl-u | Scroll items and task annotations by a page without changing selection |
 | Tab | Return focus to the task list |
 | C / Esc | Close the pane and restore the previous pane/view |
 

@@ -140,12 +140,21 @@ impl AnnotationsState {
     entries
   }
 
+  /// Reuse the timeline's sorting and formatting without exporting unrelated tasks.
+  pub(super) fn task_lines(task: &Task, width: u16, config: &Config) -> Vec<Line<'static>> {
+    Self::format_entries(&Self::entries_from_tasks(std::slice::from_ref(task)), width, config)
+  }
+
   fn lines(&self, width: u16, config: &Config) -> Vec<Line<'static>> {
+    Self::format_entries(&self.entries, width, config)
+  }
+
+  fn format_entries(entries: &[AnnotationEntry], width: u16, config: &Config) -> Vec<Line<'static>> {
     let heading_style = config.uda_style_title.add_modifier(Modifier::BOLD);
     let date_style = config.color.get("color.label").copied().unwrap_or_default();
     let mut lines = Vec::new();
     let mut previous_task = None;
-    for entry in &self.entries {
+    for entry in entries {
       if previous_task != Some(entry.task_uuid) {
         if previous_task.is_some() {
           lines.push(Line::default());

@@ -2928,6 +2928,27 @@ impl TaskwarriorTui {
     r
   }
 
+  pub async fn task_note(&mut self) -> Result<()> {
+    let Some(task) = self.task_current() else {
+      return Ok(());
+    };
+    let uuid = *task.uuid();
+    let visual = std::env::var("VISUAL").ok();
+    let editor = std::env::var("EDITOR").ok();
+    let command = crate::note::editor_command(&self.config.editor, visual.as_deref(), editor.as_deref())?;
+    let path = crate::note::prepare(&self.task_exe, uuid, &self.config.notes_directory).await?;
+    self.current_selection_uuid = Some(uuid);
+
+    if let Err(error) = self.pause_tui().await {
+      self.resume_tui().await?;
+      return Err(error);
+    }
+    let result = crate::note::open_editor(&command, &path);
+    // Always restore input and redraw, including spawn failures and unsuccessful exits.
+    self.resume_tui().await?;
+    result
+  }
+
   pub fn task_current(&self) -> Option<Task> {
     if self.tasks.is_empty() {
       return None;
@@ -3287,6 +3308,14 @@ impl TaskwarriorTui {
               Ok(_) => self.update(true).await?,
               Err(e) => {
                 self.error = Some(e);
+                self.mode = Mode::Tasks(Action::Error);
+              }
+            }
+          } else if input == self.keyconfig.note {
+            match self.task_note().await {
+              Ok(_) => self.update(true).await?,
+              Err(e) => {
+                self.error = Some(format!("{e:#}"));
                 self.mode = Mode::Tasks(Action::Error);
               }
             }
@@ -4670,6 +4699,24 @@ mod tests {
       view.push('\n');
     }
     view
+  }
+
+  #[tokio::test]
+  async fn test_note_hotkey_is_report_only_and_backend_errors_stay_in_tui() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    app.tasks.clear();
+    app.task_exe = "/note-test-must-not-run-task".into();
+    app.task_note().await.unwrap(); // No selection is a no-op.
+    set_annotation_test_tasks(&mut app);
+    app.keyconfig.note = KeyCode::Char('B');
+    app.mode = Mode::Tasks(Action::Add);
+    app.handle_input(KeyCode::Char('B')).await.unwrap();
+    assert_eq!(app.command.as_str(), "B");
+    assert_eq!(app.mode, Mode::Tasks(Action::Add));
+    app.mode = Mode::Tasks(Action::Report);
+    app.handle_input(KeyCode::Char('B')).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Error));
+    assert!(app.error.as_ref().unwrap().contains("Unable to run Taskwarrior for the note"));
   }
 
   #[tokio::test]

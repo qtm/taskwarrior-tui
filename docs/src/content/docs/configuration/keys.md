@@ -22,6 +22,7 @@ uda.taskwarrior-tui.keyconfig.start-stop=s
 uda.taskwarrior-tui.keyconfig.quick-tag=t
 uda.taskwarrior-tui.keyconfig.undo=u
 uda.taskwarrior-tui.keyconfig.edit=e
+uda.taskwarrior-tui.keyconfig.note=E
 uda.taskwarrior-tui.keyconfig.duplicate=y
 uda.taskwarrior-tui.keyconfig.modify=m
 uda.taskwarrior-tui.keyconfig.shell=!

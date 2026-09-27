@@ -49,6 +49,7 @@ uda.taskwarrior-tui.report-menu.select-on-move=false
 uda.taskwarrior-tui.report-menu.close-on-select=true
 uda.taskwarrior-tui.tabs.change-focus-rotate=false
 uda.taskwarrior-tui.quick-tag.name=next
+uda.taskwarrior-tui.notes-directory=
 # UI chrome styles (support all Taskwarrior color formats)
 uda.taskwarrior-tui.style.title=         # default: LightCyan foreground
 uda.taskwarrior-tui.style.title.border=  # default: White foreground
@@ -62,6 +63,33 @@ uda.taskwarrior-tui.style.command.error= # default: Red foreground
 See [color configuration](./colors.md) for supported color formats and additional TUI style keys such as `uda.taskwarrior-tui.style.navbar` and `uda.taskwarrior-tui.style.command`.
 
 The `uda.taskwarrior-tui.task-report.next.filter` variable defines the default view at program startup. Set this to any preconfigured report from `task reports`, or create your own report in Taskwarrior and specify its name here.
+
+## Task notes
+
+With task-list focus, **Shift+E** opens the highlighted task's Markdown note, or creates and opens one immediately. Configure the destination in `~/.taskrc`, then restart the TUI:
+
+```plaintext
+uda.taskwarrior-tui.notes-directory=~/Notes
+# Optional key remapping (default: E)
+uda.taskwarrior-tui.keyconfig.note=E
+```
+
+The folder is created if necessary. Paths may contain spaces; `~` and environment variables are expanded (`$$` means a literal dollar sign). Relative folder paths are resolved from the TUI's working directory. An unset folder produces a configuration error instead of creating a new note elsewhere.
+
+New filenames use local creation time: `YYMMDD-HHmm Task title.md`, for example `240104-2021 Task title.md`. Unsafe filename characters are replaced with underscores and very long titles are shortened. Existing files are never overwritten: name collisions get ` (2)`, ` (3)`, etc. before `.md`.
+
+The absolute path is saved on the task in the `tuinote` string UDA, so reopening works after restarting the TUI or changing the task title. A missing associated file is recreated at its saved path. Existing associations can be opened without a notes-folder setting. Moving/renaming a note externally requires updating `tuinote`; note contents are separate files and are not synced by Taskwarrior. Duplicating a task also copies its note association.
+
+The editor is selected from Taskwarrior's `editor` setting, then `$VISUAL`, then `$EDITOR`, falling back to `vi`. Quoted editor paths and arguments are supported (for example `editor=nvim -f`); commands run without a shell. Use a terminal editor that waits until you close the file. The TUI resumes and redraws on exit, including editor failures; the file and association are retained for retrying.
+
+The TUI supplies the UDA definition for its note commands. To associate an existing note manually or use the field from other Taskwarrior clients, add:
+
+```plaintext
+uda.tuinote.type=string
+uda.tuinote.label=Note
+```
+
+Then use `task <uuid> modify 'tuinote:/absolute/path/to/note.md'`. If saving an association fails, the TUI reports the retained file path rather than deleting a potentially linked file.
 
 ## Checklists
 

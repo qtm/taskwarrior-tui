@@ -84,6 +84,8 @@ pub struct Config {
   pub project_title_styles: HashMap<String, Style>,
   pub filter: String,
   pub data_location: String,
+  pub notes_directory: String,
+  pub editor: String,
   pub obfuscate: bool,
   pub print_empty_columns: bool,
   pub due: usize,
@@ -257,6 +259,8 @@ impl Config {
       project_title_styles,
       filter,
       data_location,
+      notes_directory: Self::get_config("uda.taskwarrior-tui.notes-directory", data).unwrap_or_default(),
+      editor: Self::get_config("editor", data).unwrap_or_default(),
       obfuscate,
       print_empty_columns,
       due,
@@ -923,6 +927,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn note_settings_preserve_paths_and_editor_arguments() {
+    let base = "data.location /unused\nrule.precedence.color project.\nuda.priority.values H,M,L,";
+    let defaults = Config::new(base, "next").unwrap();
+    assert!(defaults.notes_directory.is_empty());
+    assert!(defaults.editor.is_empty());
+    let data = format!("{base}\nuda.taskwarrior-tui.notes-directory ~/My Notes\neditor 'my editor' --wait");
+    let config = Config::new(&data, "next").unwrap();
+    assert_eq!(config.notes_directory, "~/My Notes");
+    assert_eq!(config.editor, "'my editor' --wait");
+  }
 
   #[test]
   fn test_project_title_styles_are_separate_and_inherit_by_project_component() {

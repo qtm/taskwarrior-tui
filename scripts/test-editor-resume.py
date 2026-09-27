@@ -8,6 +8,7 @@ No personal tasks, configuration, or editor are used.
 import argparse
 import json
 import os
+import re
 import runpy
 import shutil
 import subprocess
@@ -38,7 +39,7 @@ import fcntl, json, re, struct, sys, termios
 from pathlib import Path
 mode = Path({str(mode)!r}).read_text()
 with Path({str(calls)!r}).open('a') as log:
-    log.write(json.dumps({{'mode': mode, 'canonical': bool(termios.tcgetattr(0)[3] & termios.ICANON)}}) + '\\n')
+    log.write(json.dumps({{'mode': mode, 'args': sys.argv[1:], 'canonical': bool(termios.tcgetattr(0)[3] & termios.ICANON)}}) + '\\n')
 if mode == 'fail':
     sys.exit(1)
 if mode == 'edit':
@@ -46,6 +47,10 @@ if mode == 'edit':
     text, count = re.subn(r'^  Description:.*$', '  Description:       EDITED_ONE', path.read_text(), flags=re.M)
     assert count == 1
     path.write_text(text)
+if mode == 'note':
+    path = Path(sys.argv[1])
+    assert path.is_file(), 'Note must exist before launching editor'
+    path.write_text(path.read_text() + '# Note content\\n')
 if mode == 'resize':
     fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', 44, 100, 0, 0))
 ''')
@@ -61,6 +66,7 @@ report.next.labels=ID,Description
 report.next.sort=id+
 uda.taskwarrior-tui.task-report.show-info=false
 uda.taskwarrior-tui.tick-rate=0
+uda.taskwarrior-tui.notes-directory={tmp / 'My Notes'}
 uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
 uda.taskwarrior-tui.shortcuts.2=/usr/bin/false
 ''')
@@ -127,6 +133,44 @@ uda.taskwarrior-tui.shortcuts.2=/usr/bin/false
             assert all(call['canonical'] for call in invocations), 'Editor inherited TUI raw mode'
             print('PASS: resize during editing, shortcuts, repeated resume, and terminal-mode restoration', flush=True)
 
+            # Notes act on the highlighted task, even when other tasks are marked.
+            terminal.send('V')
+            mode.write_text('note')
+            resume('E', 'Filter Tasks')
+            note = Path(tasks()[one]['tuinote'])
+            assert note.parent == tmp / 'My Notes'
+            assert re.fullmatch(r'\d{6}-\d{4} EDITED_ONE\.md', note.name), note
+            assert 'tuinote' not in tasks()[two]
+            assert note.read_text() == '# Note content\n'
+            resume('E', 'Filter Tasks')
+            assert tasks()[one]['tuinote'] == str(note)
+            assert note.read_text() == '# Note content\n' * 2
+            assert len(list(note.parent.iterdir())) == 1
+            print('PASS: Shift+E creates, associates, opens, and reopens only the highlighted task note', flush=True)
+
+            mode.write_text('fail')
+            resume('E', 'Note editor exited with')
+            terminal.send('\x1b')
+            terminal.wait_for(lambda screen: 'Filter Tasks' in screen)
+            assert note.read_text() == '# Note content\n' * 2
+            # A spawn failure must also restore input and redraw the TUI.
+            moved = editor.with_name('editor-moved')
+            editor.rename(moved)
+            try:
+                resume('E', 'Unable to start note editor')
+            finally:
+                moved.rename(editor)
+            terminal.send('\x1b')
+            terminal.wait_for(lambda screen: 'Filter Tasks' in screen)
+            mode.write_text('noop')
+            resume('E', 'Filter Tasks')
+            assert tasks()[one]['tuinote'] == str(note)
+            invocations = [json.loads(line) for line in calls.read_text().splitlines()]
+            assert [call['mode'] for call in invocations[5:]] == ['note', 'note', 'fail', 'noop']
+            assert all(call['args'] == [str(note)] for call in invocations[5:])
+            assert all(call['canonical'] for call in invocations)
+            print('PASS: note editor failure/spawn failure preserve the note and restore terminal input', flush=True)
+
             terminal.send('q', 0.1)
             deadline = time.monotonic() + 8
             pid, status = os.waitpid(terminal.pid, os.WNOHANG)
@@ -135,7 +179,7 @@ uda.taskwarrior-tui.shortcuts.2=/usr/bin/false
                 pid, status = os.waitpid(terminal.pid, os.WNOHANG)
             terminal.finished = bool(pid)
             assert pid and os.waitstatus_to_exitcode(status) == 0, (pid, status)
-            assert terminal.keyboard_requests == ['>1', '<1'] * 8, terminal.keyboard_requests
+            assert terminal.keyboard_requests == ['>1', '<1'] * 13, terminal.keyboard_requests
             assert terminal.cursor_queries == 0
             print('PASS: clean exit; no cursor-position queries at any point', flush=True)
         except Exception:

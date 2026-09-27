@@ -23,6 +23,8 @@ Keybindings:
 
 The checklist pane also shows the highlighted task's annotations below its items, newest first. Use `Ctrl-e/y` or `Ctrl-d/u` to scroll them.
 
+**Shift+E** opens the highlighted task's associated Markdown note in your terminal editor, creating it if needed. Set `uda.taskwarrior-tui.notes-directory` first; see [task notes](./configuration/advanced.md#task-notes). This acts on the highlighted task, not all marked tasks. When the checklist pane has focus, `E` still renames the checklist; press Tab to return focus to tasks first.
+
 See [checklists](./checklists.md) for checklist focus, nested-item editing, and clipboard import controls. `Tab` switches between task and checklist focus; task controls remain active while the task list has focus. While adding or editing a checklist item, **Enter inserts a newline** and **Shift+Enter (or Ctrl-s) saves**. Other prompts still use Enter to confirm.
 
 Keybindings for task report:
@@ -34,6 +36,7 @@ Keybindings for task report:
     d: task {selected} done              - Mark task as done
 
     e: task {selected} edit              - Open selected task in editor
+    E: task note                         - Open/create highlighted task's Markdown note
 
     y: task {selected} duplicate         - Duplicate tasks
 

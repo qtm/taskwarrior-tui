@@ -51,7 +51,7 @@ python3 scripts/test-editor-resume.py --task /path/to/taskwarrior-3.x
 python3 scripts/test-checklists.py --task /path/to/taskwarrior-3.x
 ```
 
-Both scripts use disposable task databases and fake editors/clipboard helpers, not personal data. The editor test covers no-op and saved edits, editor failure, resizing while editing, and successful/failed shortcuts. It deliberately withholds cursor-position replies: resuming the full-screen TUI must redraw without querying the cursor while the asynchronous input reader is active.
+Both scripts use disposable task databases and fake editors/clipboard helpers, not personal data. The editor test covers no-op and saved edits, editor failure, resizing while editing, and successful/failed shortcuts. It also checks Shift+E note creation/reopening, single-task association with multiple tasks marked, and note-editor exit/spawn failures without losing content or terminal input. It deliberately withholds cursor-position replies: resuming the full-screen TUI must redraw without querying the cursor while the asynchronous input reader is active.
 
 ## Building the CLI
 

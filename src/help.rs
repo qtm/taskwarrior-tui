@@ -30,6 +30,7 @@ fn keycode_for(name: &str, kc: &KeyConfig) -> KeyCode {
     "add" => kc.add,
     "done" => kc.done,
     "edit" => kc.edit,
+    "note" => kc.note,
     "duplicate" => kc.duplicate,
     "down" => kc.down,
     "up" => kc.up,

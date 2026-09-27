@@ -18,6 +18,9 @@ mod event;
 mod help;
 mod history;
 mod keyconfig;
+mod note;
+#[cfg(test)]
+mod note_tests;
 mod pane;
 mod scrollbar;
 mod table;

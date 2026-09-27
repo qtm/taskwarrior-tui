@@ -24,6 +24,7 @@ pub struct KeyConfig {
   pub select_all: KeyCode,
   pub undo: KeyCode,
   pub edit: KeyCode,
+  pub note: KeyCode,
   pub duplicate: KeyCode,
   pub modify: KeyCode,
   pub shell: KeyCode,
@@ -76,6 +77,7 @@ impl Default for KeyConfig {
       select_all: KeyCode::Char('V'),
       undo: KeyCode::Char('u'),
       edit: KeyCode::Char('e'),
+      note: KeyCode::Char('E'),
       duplicate: KeyCode::Char('y'),
       modify: KeyCode::Char('m'),
       shell: KeyCode::Char('!'),
@@ -135,6 +137,7 @@ impl KeyConfig {
     let select_all = Self::get_config("uda.taskwarrior-tui.keyconfig.select-all", data);
     let undo = Self::get_config("uda.taskwarrior-tui.keyconfig.undo", data);
     let edit = Self::get_config("uda.taskwarrior-tui.keyconfig.edit", data);
+    let note = Self::get_config("uda.taskwarrior-tui.keyconfig.note", data);
     let duplicate = Self::get_config("uda.taskwarrior-tui.keyconfig.duplicate", data);
     let modify = Self::get_config("uda.taskwarrior-tui.keyconfig.modify", data);
     let shell = Self::get_config("uda.taskwarrior-tui.keyconfig.shell", data);
@@ -178,6 +181,7 @@ impl KeyConfig {
     self.select_all = select_all.unwrap_or(self.select_all);
     self.undo = undo.unwrap_or(self.undo);
     self.edit = edit.unwrap_or(self.edit);
+    self.note = note.unwrap_or(self.note);
     self.duplicate = duplicate.unwrap_or(self.duplicate);
     self.modify = modify.unwrap_or(self.modify);
     self.shell = shell.unwrap_or(self.shell);
@@ -226,6 +230,7 @@ impl KeyConfig {
       &self.quick_tag,
       &self.undo,
       &self.edit,
+      &self.note,
       &self.duplicate,
       &self.modify,
       &self.shell,
@@ -281,6 +286,16 @@ fn has_just_one_char(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn note_key_defaults_to_shift_e_and_can_be_remapped() {
+    assert_eq!(KeyConfig::default().note, KeyCode::Char('E'));
+    let keys = KeyConfig::new("uda.taskwarrior-tui.keyconfig.note B").unwrap();
+    assert_eq!(keys.note, KeyCode::Char('B'));
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.note e").is_err());
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.edit E").is_err());
+    assert!(crate::help::Help::new(&keys).text.contains("B: task note"));
+  }
 
   #[test]
   fn checklist_keys_are_configurable_and_reject_conflicts() {

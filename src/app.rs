@@ -322,6 +322,7 @@ impl TaskwarriorTui {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    crate::event::enable_keyboard_enhancements()?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
@@ -333,6 +334,7 @@ impl TaskwarriorTui {
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+    crate::event::enable_keyboard_enhancements()?;
     enable_raw_mode()?;
     self.requires_redraw = true;
     terminal.hide_cursor()?;
@@ -363,6 +365,7 @@ impl TaskwarriorTui {
     self.abort_event_loop().await?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    crate::event::disable_keyboard_enhancements()?;
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)?;
     terminal.show_cursor()?;
@@ -738,7 +741,7 @@ impl TaskwarriorTui {
     }
     let rects = Layout::default()
       .direction(Direction::Vertical)
-      .constraints([Constraint::Min(0), Constraint::Length(2)].as_ref())
+      .constraints([Constraint::Min(0), Constraint::Length(self.checklists.editor_height(layout.height))].as_ref())
       .split(layout);
 
     // Temporary panes share one region, preserving the underlying details preference.
@@ -3085,6 +3088,12 @@ impl TaskwarriorTui {
   }
 
   pub async fn handle_input(&mut self, input: KeyCode) -> Result<()> {
+    // Preserve the previous Enter behavior outside the multiline checklist editor.
+    let input = if input == KeyCode::ShiftEnter && self.mode != Mode::Tasks(Action::Checklist) {
+      KeyCode::Char('\n')
+    } else {
+      input
+    };
     if input == self.keyconfig.checklist && matches!(self.mode, Mode::Projects | Mode::Timesheet | Mode::Calendar) {
       self.checklists.toggle(&mut self.mode);
       self.checklists.sync_task(self.task_current());
@@ -4796,6 +4805,8 @@ mod tests {
     assert!(!app.annotations.visible);
     app.current_selection = 1;
     app.handle_input(KeyCode::Char('\n')).await.unwrap();
+    assert!(app.checklists.editor.as_ref().unwrap().error.is_none());
+    app.handle_input(KeyCode::ShiftEnter).await.unwrap();
     assert_eq!(app.mode, Mode::Tasks(Action::Checklist));
     assert!(app.checklists.editor.as_ref().unwrap().error.is_some());
     app.handle_input(KeyCode::Esc).await.unwrap();

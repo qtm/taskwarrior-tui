@@ -78,7 +78,10 @@ async fn checklist_backend_roundtrip_undo_duplicate_delete_and_conflict() {
   let list = Checklist::from_markdown(include_str!("../tests/fixtures/checklist-ru.md")).unwrap();
   let doc = Document {
     version: 1,
-    lists: vec![list],
+    lists: vec![
+      list,
+      Checklist::from_markdown(include_str!("../tests/fixtures/checklist-multiline.md")).unwrap(),
+    ],
   };
   checklist::save(&backend.executable, uuid, None, &doc).await.unwrap();
   let saved = checklist::load_task(&backend.executable, uuid).await.unwrap();
@@ -90,7 +93,8 @@ async fn checklist_backend_roundtrip_undo_duplicate_delete_and_conflict() {
   let raw = checklist::raw_value(&saved).unwrap();
   let mut changed = doc.clone();
   changed.lists[0].items[0].checked = false;
-  changed.lists[0].items[0].text = "Quotes \"text\", backslash \\, shell $(never-run) +tag project:other 👩‍💻".into();
+  changed.lists[0].items[0].text =
+    "Quotes \"text\", backslash \\, shell $(never-run) +tag project:other 👩‍💻\nОписание на нескольких\nстроках\n\nПоследний абзац".into();
   checklist::save(&backend.executable, uuid, raw.as_deref(), &changed).await.unwrap();
   let current = checklist::load_task(&backend.executable, uuid).await.unwrap();
   assert_eq!(checklist::from_task(&current).unwrap(), changed);

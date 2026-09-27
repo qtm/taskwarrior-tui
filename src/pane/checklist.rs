@@ -44,15 +44,92 @@ pub struct Editor {
   pub error: Option<String>,
   notice: Option<String>,
   preview_scroll: usize,
+  preferred_column: Option<usize>,
 }
 
 impl Editor {
+  fn multiline(&self) -> bool {
+    matches!(self.kind, EditKind::AddItem { .. } | EditKind::EditItem { .. })
+  }
+
+  fn submits(&self, input: KeyCode) -> bool {
+    input == KeyCode::ShiftEnter
+      || if self.multiline() {
+        input == KeyCode::Ctrl('s')
+      } else {
+        input == KeyCode::Char('\n')
+      }
+  }
+
+  fn move_vertical(&mut self, down: bool) {
+    let text = self.buffer.as_str();
+    let pos = self.buffer.pos();
+    let start = text[..pos].rfind('\n').map_or(0, |at| at + 1);
+    let column = *self.preferred_column.get_or_insert_with(|| utils::display_width(&text[start..pos]));
+    let (start, end) = if down {
+      let Some(next) = text[pos..].find('\n').map(|at| pos + at + 1) else {
+        return;
+      };
+      (next, text[next..].find('\n').map_or(text.len(), |at| next + at))
+    } else {
+      if start == 0 {
+        return;
+      }
+      (text[..start - 1].rfind('\n').map_or(0, |at| at + 1), start - 1)
+    };
+    let mut offset = 0;
+    let mut width = 0;
+    for grapheme in text[start..end].graphemes(true) {
+      let size = utils::display_width(grapheme);
+      if width + size > column {
+        break;
+      }
+      width += size;
+      offset += grapheme.len();
+    }
+    self.buffer.set_pos(start + offset);
+  }
+
+  fn edit_input(&mut self, input: KeyCode, changes: &mut utils::Changeset, viewport: usize) {
+    if matches!(self.kind, EditKind::DeleteItem { .. } | EditKind::DeleteList(_)) {
+      return;
+    }
+    if self.multiline() && matches!(input, KeyCode::Up | KeyCode::Down) {
+      self.move_vertical(input == KeyCode::Down);
+    } else {
+      self.preferred_column = None;
+      let import = matches!(self.kind, EditKind::Import);
+      match input {
+        KeyCode::Ctrl('u') if import => {
+          self.buffer.update("", 0, changes);
+          self.notice = None;
+          self.preview_scroll = 0;
+        }
+        KeyCode::Ctrl('n') if import => {
+          if self.buffer.len() >= MAX_BYTES {
+            self.error = Some("Input is too large".into());
+            return;
+          }
+          self.buffer.insert('\n', 1, changes);
+        }
+        KeyCode::PageDown if import => self.preview_scroll = self.preview_scroll.saturating_add(viewport.max(1)),
+        KeyCode::PageUp if import => self.preview_scroll = self.preview_scroll.saturating_sub(viewport.max(1)),
+        KeyCode::Char(c) if self.buffer.len() + c.len_utf8() > MAX_BYTES => {
+          self.error = Some("Input is too large".into());
+          return;
+        }
+        _ => handle_movement(&mut self.buffer, input, changes),
+      }
+    }
+    self.error = None;
+  }
+
   fn label(&self) -> &str {
     match self.kind {
       EditKind::Import => "Import Markdown: Enter attaches a NEW list; Esc cancels; Ctrl-u clears; Ctrl-n inserts newline",
-      EditKind::AddItem { child: true, .. } => "Add child item",
-      EditKind::AddItem { .. } => "Add item",
-      EditKind::EditItem { .. } => "Edit item",
+      EditKind::AddItem { child: true, .. } => "Add child — Enter: newline | Shift+Enter/Ctrl-s: save | Esc: cancel",
+      EditKind::AddItem { .. } => "Add item — Enter: newline | Shift+Enter/Ctrl-s: save | Esc: cancel",
+      EditKind::EditItem { .. } => "Edit item — Enter: newline | Shift+Enter/Ctrl-s: save | Esc: cancel",
       EditKind::DeleteItem { .. } => "Delete item AND its children? Enter confirms; Esc cancels",
       EditKind::AddList => "New checklist name",
       EditKind::RenameList(_) => "Rename checklist",
@@ -62,7 +139,12 @@ impl Editor {
 
   fn apply(&self) -> Result<(Document, Option<Uuid>, Option<Uuid>)> {
     let mut doc = self.document.clone();
-    let text = self.buffer.as_str().trim().to_string();
+    let text = if self.multiline() {
+      self.buffer.as_str().trim_end()
+    } else {
+      self.buffer.as_str().trim()
+    }
+    .to_string();
     let mut list_id = None;
     let mut item_id = None;
     match self.kind {
@@ -242,6 +324,7 @@ impl ChecklistsState {
       error: None,
       notice: None,
       preview_scroll: 0,
+      preferred_column: None,
     });
     self.error = None;
     self.focused = true;
@@ -257,12 +340,25 @@ impl ChecklistsState {
       if matches!(editor.kind, EditKind::DeleteItem { .. } | EditKind::DeleteList(_)) {
         return;
       }
-      for c in text.chars() {
+      for c in text.replace("\r\n", "\n").replace('\r', "\n").chars() {
         editor.buffer.insert(c, 1, changes);
       }
+      editor.preferred_column = None;
       editor.error = None;
       editor.notice = None;
       editor.preview_scroll = 0;
+    }
+  }
+
+  pub fn editor_height(&self, screen_height: u16) -> u16 {
+    if let Some(editor) = &self.editor
+      && editor.multiline()
+    {
+      (editor.buffer.as_str().split('\n').count() + 1)
+        .clamp(2, 8)
+        .min(screen_height.saturating_sub(4).max(2) as usize) as u16
+    } else {
+      2
     }
   }
 
@@ -284,6 +380,25 @@ impl ChecklistsState {
           Paragraph::new("Paste Markdown; Enter: attach new list | Esc: cancel | PgUp/PgDn: preview"),
           inner,
         );
+      } else if editor.multiline() {
+        let prefix = &editor.buffer.as_str()[..editor.buffer.pos()];
+        let row = prefix.bytes().filter(|&c| c == b'\n').count();
+        let column = utils::display_width(prefix.rsplit('\n').next().unwrap_or_default());
+        let top = row.saturating_sub(inner.height.saturating_sub(1) as usize);
+        let left = column.saturating_sub(inner.width.saturating_sub(1) as usize).min(u16::MAX as usize);
+        let lines: Vec<_> = editor
+          .buffer
+          .as_str()
+          .split('\n')
+          .skip(top)
+          .take(inner.height as usize)
+          .map(|line| Line::from(utils::display_control_chars(line)))
+          .collect();
+        f.render_widget(Paragraph::new(lines).scroll((0, left as u16)), inner);
+        f.set_cursor_position((
+          inner.x + column.saturating_sub(left).min(inner.width.saturating_sub(1) as usize) as u16,
+          inner.y + (row - top) as u16,
+        ));
       } else {
         let position = utils::display_width(&editor.buffer.as_str()[..editor.buffer.pos()]);
         let scroll = position.saturating_sub(inner.width.saturating_sub(1) as usize).min(u16::MAX as usize);
@@ -511,24 +626,30 @@ fn wrap_item(lines: &mut Vec<Line<'static>>, item: &checklist::Item, width: u16,
   if width == 0 {
     return;
   }
+  let mut logical_lines = item.text.split('\n');
+  let title = logical_lines.next().unwrap_or_default();
   let prefix = format!("{}- [{}] ", "  ".repeat(item.depth as usize), if item.checked { 'x' } else { ' ' });
   if prefix.width() >= width {
-    push_wrapped(lines, &format!("{prefix}{}", item.text), width as u16, "", style);
-    return;
-  }
-  let indent = " ".repeat(prefix.width());
-  let mut used = prefix.width();
-  let mut text = prefix;
-  for grapheme in item.text.graphemes(true) {
-    let grapheme = if grapheme.width() > width - indent.len() { "�" } else { grapheme };
-    if used + grapheme.width() > width {
-      lines.push(Line::styled(std::mem::replace(&mut text, indent.clone()), style));
-      used = indent.len();
+    push_wrapped(lines, &format!("{prefix}{title}"), width as u16, "", style);
+  } else {
+    let indent = " ".repeat(prefix.width());
+    let mut used = prefix.width();
+    let mut text = prefix;
+    for grapheme in title.graphemes(true) {
+      let grapheme = if grapheme.width() > width - indent.len() { "�" } else { grapheme };
+      if used + grapheme.width() > width {
+        lines.push(Line::styled(std::mem::replace(&mut text, indent.clone()), style));
+        used = indent.len();
+      }
+      text.push_str(grapheme);
+      used += grapheme.width();
     }
-    text.push_str(grapheme);
-    used += grapheme.width();
+    lines.push(Line::styled(text, style));
   }
-  lines.push(Line::styled(text, style));
+  let description_indent = "  ".repeat(item.depth as usize + 1);
+  for description in logical_lines {
+    push_wrapped(lines, description, width as u16, &description_indent, style);
+  }
 }
 
 impl TaskwarriorTui {
@@ -671,7 +792,11 @@ impl TaskwarriorTui {
         edit = Some(EditKind::EditItem { list, item });
       } else if input == self.keyconfig.delete {
         let current = self.checklists.current_list().unwrap();
-        text = format!("{} ({} items)", current.items[index].text, current.subtree(index).len());
+        text = format!(
+          "{} ({} items)",
+          current.items[index].text.lines().next().unwrap_or_default(),
+          current.subtree(index).len()
+        );
         edit = Some(EditKind::DeleteItem { list, item });
       } else {
         let mut document = self.checklists.document.clone();
@@ -718,7 +843,7 @@ impl TaskwarriorTui {
       self.checklists.sync_task(self.task_current());
       return Ok(());
     }
-    if input == KeyCode::Char('\n') {
+    if self.checklists.editor.as_ref().is_some_and(|editor| editor.submits(input)) {
       if let Some(editor) = &self.checklists.editor {
         let uuid = editor.uuid;
         match editor.apply() {
@@ -734,28 +859,7 @@ impl TaskwarriorTui {
         }
       }
     } else if let Some(editor) = &mut self.checklists.editor {
-      if matches!(editor.kind, EditKind::DeleteItem { .. } | EditKind::DeleteList(_)) {
-        return Ok(());
-      }
-      let import = matches!(editor.kind, EditKind::Import);
-      match input {
-        KeyCode::Ctrl('u') if import => {
-          editor.buffer.update("", 0, &mut self.changes);
-          editor.notice = None;
-          editor.preview_scroll = 0;
-        }
-        KeyCode::Ctrl('n') if import && editor.buffer.len() < MAX_BYTES => {
-          editor.buffer.insert('\n', 1, &mut self.changes);
-        }
-        KeyCode::PageDown if import => editor.preview_scroll = editor.preview_scroll.saturating_add(self.checklists.viewport.max(1)),
-        KeyCode::PageUp if import => editor.preview_scroll = editor.preview_scroll.saturating_sub(self.checklists.viewport.max(1)),
-        KeyCode::Char(c) if editor.buffer.len() + c.len_utf8() > MAX_BYTES => {
-          editor.error = Some("Input is too large".into());
-          return Ok(());
-        }
-        _ => handle_movement(&mut editor.buffer, input, &mut self.changes),
-      }
-      editor.error = None;
+      editor.edit_input(input, &mut self.changes, self.checklists.viewport);
     }
     Ok(())
   }
@@ -886,6 +990,117 @@ mod tests {
     );
   }
 
+  fn item_editor(text: &str) -> Editor {
+    let mut buffer = LineBuffer::with_capacity(MAX_BYTES);
+    buffer.update(text, text.len(), &mut utils::Changeset::default());
+    Editor {
+      kind: EditKind::AddItem {
+        list: None,
+        after: None,
+        child: false,
+      },
+      uuid: Uuid::new_v4(),
+      baseline: None,
+      document: Document::default(),
+      buffer,
+      error: None,
+      notice: None,
+      preview_scroll: 0,
+      preferred_column: None,
+    }
+  }
+
+  #[test]
+  fn item_editor_enter_inserts_newline_and_modified_enter_saves() {
+    let mut editor = item_editor("Title");
+    assert!(!editor.submits(KeyCode::Char('\n')));
+    assert!(editor.submits(KeyCode::ShiftEnter));
+    assert!(editor.submits(KeyCode::Ctrl('s')));
+    let mut changes = utils::Changeset::default();
+    editor.edit_input(KeyCode::Char('\n'), &mut changes, 10);
+    for c in "Описание".chars() {
+      editor.edit_input(KeyCode::Char(c), &mut changes, 10);
+    }
+    editor.edit_input(KeyCode::Char('\n'), &mut changes, 10);
+    editor.edit_input(KeyCode::Char('次'), &mut changes, 10);
+    assert_eq!(editor.buffer.as_str(), "Title\nОписание\n次");
+    assert!(editor.document.lists.is_empty(), "Typing must not create an item yet");
+    let (document, _, _) = editor.apply().unwrap();
+    assert_eq!(document.lists[0].items.len(), 1);
+    assert_eq!(document.lists[0].items[0].text, "Title\nОписание\n次");
+    for kind in [EditKind::Import, EditKind::AddList, EditKind::DeleteList(Uuid::new_v4())] {
+      editor.kind = kind;
+      assert!(editor.submits(KeyCode::Char('\n')));
+      assert!(!editor.submits(KeyCode::Ctrl('s')));
+    }
+    assert!(item_editor("\nNo title").apply().is_err());
+    let mut oversized = item_editor(&"x".repeat(MAX_BYTES));
+    oversized.edit_input(KeyCode::Char('\n'), &mut changes, 10);
+    assert_eq!(oversized.buffer.len(), MAX_BYTES);
+    assert!(oversized.error.is_some());
+  }
+
+  #[test]
+  fn multiline_editor_cursor_navigation_rendering_and_paste() {
+    let mut editor = item_editor("Title\nПривет\nx\nlong ending");
+    editor.buffer.set_pos("Title\nПривет".len());
+    let mut changes = utils::Changeset::default();
+    editor.edit_input(KeyCode::Down, &mut changes, 10);
+    assert_eq!(&editor.buffer.as_str()[..editor.buffer.pos()], "Title\nПривет\nx");
+    editor.edit_input(KeyCode::Down, &mut changes, 10);
+    assert_eq!(&editor.buffer.as_str()[..editor.buffer.pos()], "Title\nПривет\nx\nlong e");
+    editor.edit_input(KeyCode::Up, &mut changes, 10);
+    editor.edit_input(KeyCode::Up, &mut changes, 10);
+    assert_eq!(editor.buffer.pos(), "Title\nПривет".len());
+    editor.edit_input(KeyCode::Home, &mut changes, 10);
+    assert_eq!(editor.buffer.pos(), "Title\n".len());
+
+    let (mut state, config) = selection_fixture();
+    state.editor = Some(item_editor("Title"));
+    state.paste("\r\nОписание\r\nend", &mut changes);
+    assert_eq!(state.editor.as_ref().unwrap().buffer.as_str(), "Title\nОписание\nend");
+    assert_eq!(state.editor_height(30), 4);
+    let mut terminal = Terminal::new(TestBackend::new(90, 4)).unwrap();
+    terminal.draw(|frame| state.draw_editor(frame, frame.area(), &config)).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert_eq!(row_with(buffer, "Title"), 1);
+    assert_eq!(row_with(buffer, "Описание"), 2);
+    assert_eq!(row_with(buffer, "end"), 3);
+    assert_eq!(terminal.get_cursor_position().unwrap(), ratatui::layout::Position::new(3, 3));
+    let long = (0..50).map(|n| format!("line{n}")).collect::<Vec<_>>().join("\n");
+    state.editor = Some(item_editor(&long));
+    assert_eq!(state.editor_height(30), 8);
+    terminal.draw(|frame| state.draw_editor(frame, frame.area(), &config)).unwrap();
+    assert_eq!(row_with(terminal.backend().buffer(), "line47"), 1);
+    assert_eq!(row_with(terminal.backend().buffer(), "line49"), 3);
+  }
+
+  #[test]
+  fn descriptions_render_and_highlight_with_their_item() {
+    let (mut state, config) = selection_fixture();
+    let list = Checklist::from_markdown(include_str!("../../tests/fixtures/checklist-multiline.md")).unwrap();
+    state.selected = Some(list.items[0].id);
+    state.document.lists = vec![list];
+    let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    let title = row_with(&buffer, "- [ ] task");
+    let description = row_with(&buffer, "  task description");
+    assert_eq!(description, title + 1);
+    assert_eq!(row_with(&buffer, "  on multi line"), title + 2);
+    let child = row_with(&buffer, "  - [ ] subtask");
+    let child_description = row_with(&buffer, "    another description");
+    assert_eq!(child_description, child + 1);
+    for y in title..child {
+      assert!(buffer[(99, y)].modifier.contains(Modifier::REVERSED));
+    }
+    assert!(!buffer[(0, child_description)].modifier.contains(Modifier::REVERSED));
+    state.selected = Some(state.document.lists[0].items[1].id);
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    assert!(!buffer[(99, description)].modifier.contains(Modifier::REVERSED));
+    assert!(buffer[(99, child_description)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(state.document.progress(), (0, 5));
+  }
+
   #[test]
   fn markdown_wrap_uses_hanging_indent_and_graphemes() {
     let mut lines = Vec::new();
@@ -924,6 +1139,7 @@ mod tests {
       error: None,
       notice: None,
       preview_scroll: 0,
+      preferred_column: None,
     };
     editor.buffer.update("- [ ] new\n  - [x] child", 0, &mut utils::Changeset::default());
     let (doc, _, _) = editor.apply().unwrap();

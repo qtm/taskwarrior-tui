@@ -8,6 +8,7 @@ Attach one or more named checklists to any task, render them using Markdown task
 
 - Render unchecked items as `- [ ] text` and checked items as `- [x] text`.
 - Render children with two additional spaces per nesting level. Wrap long text under its text, not its checkbox. Preserve Cyrillic, other Unicode, and grapheme boundaries.
+- Support multiline item descriptions: the first text line is the title, remaining lines are its description. Description lines are displayed indented below the title and are part of the same item for selection, progress, and subtree operations.
 - Keep explicit checked state for every item. Checking a parent does **not** check its children; checking all children does **not** check the parent.
 - Progress counts every item, including parents and children.
 - Support multiple named lists per task, with add/rename/delete operations.
@@ -41,7 +42,7 @@ Attach one or more named checklists to any task, render them using Markdown task
 - With checklist focus: `j/k` or arrows select items, Space toggles, `a` adds a sibling, `o` adds a child, `e` edits, `x` asks to delete the selected subtree, `Alt-j/k` reorders sibling subtrees, `>` / `<` indents/outdents, `[` / `]` selects a list, `A/E/X` adds/renames/deletes lists.
 - Existing configurable task navigation/add/edit/delete bindings should also work for the corresponding checklist actions where practical.
 - In focused checklists, unknown keys must not fall through to destructive parent-task actions. Global quit/help/refresh/undo/pane switching remain available when not editing.
-- During prompts, Enter confirms and Esc cancels; toggle keys become ordinary text. A prompt captures its task UUID, list/item ID, and original document so refresh/reordering cannot redirect the write.
+- In item add/edit prompts, Enter inserts a newline and Shift+Enter or Ctrl-s saves. Import, list-name, and deletion prompts retain Enter confirmation. Esc cancels and toggle keys become ordinary text. A prompt captures its task UUID, list/item ID, and original document so refresh/reordering cannot redirect the write. Request enhanced keyboard reporting on supported terminals, restore it on suspend/exit, and provide Ctrl-s for legacy terminals.
 - Native undo remains global Taskwarrior undo, not a separate per-checklist history.
 
 ## Clipboard import
@@ -52,7 +53,7 @@ Attach one or more named checklists to any task, render them using Markdown task
 - If no clipboard reader is available (including SSH), keep an import prompt open and accept terminal bracketed paste, preserving newlines and indentation. Provide a clear-buffer action.
 - Preview before saving; Enter attaches the parsed checklist as a **new named list**, preserving all existing lists; Esc changes nothing.
 - Accept `-`, `*`, and `+` task-list bullets, `[ ]`, `[x]`, and `[X]`, LF/CRLF, blank lines, and an optional leading Markdown heading for the list name.
-- Recognize nesting from consistent indentation levels (including common two- and four-space Markdown indentation); reject ambiguous tabs, inconsistent dedents, malformed checkbox lines, empty item text, and non-checklist prose with line numbers. Do not silently discard content.
+- Recognize nesting from consistent checkbox indentation levels (including common two- and four-space Markdown indentation). Non-checkbox lines after an item become its description until the next checkbox; both indented and lazy continuations are accepted. Reject ambiguous indentation tabs, inconsistent checkbox dedents, malformed checkbox lines, empty titles, and prose before the first item with line numbers. Do not silently discard content.
 - Normalize display/export formatting to two spaces per depth and lowercase `x` without changing item text or checked state.
 
 ## Implementation stages
@@ -82,7 +83,7 @@ Attach one or more named checklists to any task, render them using Markdown task
 - Single-field JSON synchronization has whole-field conflict semantics; cross-device automatic merging is not implemented. Normal UDA export/import compatibility is tested; a real sync-server test requires an isolated server and credentials.
 - No reusable templates, checklist-to-task conversion, auto-completion of parent tasks, or incomplete-checklist completion warnings in this release.
 - Native duplication preserves checked states. Recurring instances inherit their template's checklist; instance edits do not propagate back to the template.
-- No full Markdown document editor: import supports task lists and an optional title, not arbitrary prose, code fences, or continuation paragraphs.
+- No full Markdown document interpreter: import supports task lists, multiline descriptions, and an optional title. Formatting/code fences in descriptions have no special meaning; prose before the first item is rejected.
 
 ## Progress log
 
@@ -93,6 +94,7 @@ Attach one or more named checklists to any task, render them using Markdown task
 - Iteration 4: added `scripts/test-checklists.py`, a repeatable live PTY test with a fake clipboard and isolated tasks. It exercises import, cancellation, malformed Markdown, nested edits/reordering/deletion, named lists, multi-selection safety, stale edits, terminal paste, pane restoration, transpose, and clean exit. Adjusted the test to await asynchronous redraw after saving rather than relying on a fixed sleep.
 - Final validation: all **76 Rust tests passed** with isolated Taskwarrior 3.3.0 fixtures; formatting, debug build, diff whitespace checks, and sidebar JavaScript syntax checks passed. Clippy passed with only the three pre-existing lint categories allowed (`useless_borrows_in_formatting`, `let_and_return`, `needless_borrows_for_generic_args`). Both the new checklist PTY test and the existing annotations/project-title-color PTY regression test passed. Updated the help snapshot to reflect the longer help page.
 - Highlighting follow-up: fixed invisible selection when the optional report-selection style is empty. Focused checklist items now have a reverse-video fallback plus configured selection modifiers, full-width highlighting on every wrapped line, and no implicit completed-item dimming. Added rendered-buffer tests covering selection movement, focus changes, custom colors/modifiers, and scrolled continuation lines. All **78 Rust tests**, Clippy (same existing allowances), the debug build, and the live checklist PTY test passed.
+- Multiline follow-up: added title/description lines within the existing item text field, Markdown continuation import/rendering, and the exact example in `tests/fixtures/checklist-multiline.md`. Enter inserts a newline in item editors; Shift+Enter or Ctrl-s saves. The growing multiline editor supports line navigation, Unicode cursor positioning, and scroll-to-cursor. Added enhanced-keyboard request/restore handling and release-event filtering. All **84 Rust tests**, formatting, Clippy (same existing allowances), debug build, and both live PTY regression suites passed. Live tests cover actual Shift+Enter CSI-u input, Ctrl-s fallback, descriptions on nested items, and restoration across external-command suspend/resume and exit. The PTY fixture now answers cursor-position queries during resume.
 - Platform coverage: runtime tests ran on Linux. macOS uses the standard `pbpaste` path but was not runtime-tested here. No real remote sync server was used; cross-database export/import was tested and whole-field synchronization limitations are documented.
 
 ## Delivered files
@@ -100,8 +102,8 @@ Attach one or more named checklists to any task, render them using Markdown task
 - `src/checklist.rs`: model, validation, Markdown parsing/serialization, subtree operations, Taskwarrior persistence.
 - `src/clipboard.rs`: read-only clipboard adapters, bounded output and timeout.
 - `src/pane/checklist.rs`: rendering, focus, prompts, import preview, editing controller.
-- `src/checklist_tests.rs`, `tests/fixtures/checklist-ru.md`, `scripts/test-checklists.py`: backend, fixture, and live integration coverage.
-- `src/app.rs`, `src/action.rs`, `src/pane/mod.rs`, `src/keyconfig.rs`, `src/task_report.rs`, `src/main.rs`, `src/help.*`: integration and built-in help. Shared wrapping helpers remain in `src/pane/annotations.rs`.
+- `src/checklist_tests.rs`, `tests/fixtures/checklist-ru.md`, `tests/fixtures/checklist-multiline.md`, `scripts/test-checklists.py`: backend, fixtures, and live integration coverage.
+- `src/app.rs`, `src/action.rs`, `src/event.rs`, `src/pane/mod.rs`, `src/keyconfig.rs`, `src/task_report.rs`, `src/main.rs`, `src/help.*`: integration, keyboard handling, and built-in help. Shared wrapping helpers remain in `src/pane/annotations.rs`.
 - `docs/src/content/docs/checklists.md`: user guide; configuration, keybindings, colors, and sidebar pages link to it.
 
 The implementation is complete for the required scope above. Explicit future-work items remain intentionally out of scope.

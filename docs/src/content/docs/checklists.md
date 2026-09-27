@@ -56,12 +56,45 @@ An empty or invalid clipboard never modifies the task. Errors include the offend
 - Unordered task-list bullets: `-`, `*`, or `+`.
 - Checkbox states: `[ ]`, `[x]`, or `[X]`.
 - Nested items with consistent space indentation, including two- and four-space indentation.
-- Blank lines and LF/CRLF line endings.
+- Multiline descriptions beneath items, including blank lines between description paragraphs, and LF/CRLF line endings.
 - An optional leading Markdown heading for the list name. Without one, the name is `Checklist`.
 
-Rendering normalizes nesting to two spaces per level and checked markers to lowercase `x`. Import rejects indentation tabs, inconsistent dedents, empty items, malformed checkboxes, and non-checklist prose rather than silently discarding them. Arbitrary Markdown documents, code fences, and continuation paragraphs are not supported.
+Rendering normalizes nesting to two spaces per level and checked markers to lowercase `x`. Non-checkbox lines after an item become its description until the next checkbox, whether indented or unindented. Checkbox indentation alone determines nesting; a description after a nested checkbox belongs to that nested item. Blank separator lines between items are ignored, while blank lines within a description are preserved.
+
+Import rejects indentation tabs, inconsistent checkbox dedents, empty titles, malformed checkboxes, and prose before the first item rather than silently discarding content. This is a task-list importer, not a full Markdown interpreter; code fences and formatting inside descriptions have no special meaning.
 
 Import **always adds a new list** to the highlighted task. It never overwrites an existing list or attaches to every marked task. Repeating an import intentionally creates another independent list.
+
+## Multiline item descriptions
+
+Both import and the checklist pane support descriptions like this:
+
+```markdown
+- [ ] task
+  task description
+  on multi line
+  - [ ] subtask
+    another description
+- [ ] first level task without description
+- [ ] first level task with description
+  description
+- [ ] first level task without description
+```
+
+Descriptions are part of their item, not separate checkboxes. They move, delete, and highlight together with the item; they do not increase the progress count. Existing single-line checklists need no migration.
+
+When **adding or editing an item** (`a`, `o`, or `e`):
+
+- The first line is the item title; subsequent lines are its description.
+- **Enter** inserts a newline without saving.
+- **Shift+Enter** creates/saves the item.
+- **Ctrl-s** also saves, as a fallback for terminals that cannot distinguish Shift+Enter from Enter.
+- **Esc** cancels without changing the task.
+- **Up/Down** moves the cursor between lines; Home/End moves to the start/end of the current line. The editor grows as you add lines and scrolls to keep the cursor visible.
+
+The TUI requests enhanced keyboard reporting from compatible terminals and restores the previous mode on exit or when launching an external editor. In older terminals or some terminal multiplexer configurations, Shift+Enter still arrives as ordinary Enter; use Ctrl-s in that case.
+
+**Import previews, checklist names, and deletion confirmations still use ordinary Enter to confirm.** To create a nested checkbox rather than a description line, finish the current item and use `o`, or import a complete Markdown checklist with `I`.
 
 ## Editing keys
 
@@ -87,7 +120,7 @@ These keys apply when the **checklist pane has focus**:
 | Tab | Return focus to the task list |
 | C / Esc | Close the pane and restore the previous pane/view |
 
-The configured task add/edit/delete and navigation keys also apply to the corresponding checklist operations. Enter confirms edits; Esc cancels. Text editing uses the normal cursor movement and deletion keys. Pane shortcuts are ordinary text while editing.
+The configured task add/edit/delete and navigation keys also apply to the corresponding checklist operations. Item editors use Enter for a new line and Shift+Enter (or Ctrl-s) to save; other prompts use Enter to confirm. Esc cancels. Text editing uses the normal cursor movement and deletion keys. Pane shortcuts are ordinary text while editing.
 
 Outdenting moves a subtree **after its former parent's entire subtree**, preserving the remaining children's parentage. Indenting requires a preceding sibling. These operations never implicitly change checkboxes.
 
@@ -134,7 +167,7 @@ This example replaces the report columns; adapt it if you want to retain other c
 - Changes participate in native Taskwarrior undo and travel with normal task export/backup/synchronization. No separate local checklist database is used. Other clients need checklist-aware UI support to edit the structured data conveniently.
 - Native duplication copies lists **and checked states**. IDs are scoped to the owning task, so copied lists are independent.
 - Recurring instances inherit their template's checklist. Checklist edits disable recurrence propagation: modifying one instance does not change siblings or the template; modifying the template does not rewrite already-created instances.
-- Before saving, the TUI re-reads the stored checklist and rejects a stale edit. If it reports an external change, your draft stays open. Cancel, refresh, and retry. On backend failure, retry Enter after resolving the failure or cancel safely.
+- Before saving, the TUI re-reads the stored checklist and rejects a stale edit. If it reports an external change, your draft stays open. Cancel, refresh, and retry. On backend failure, retry the save shortcut (Shift+Enter/Ctrl-s for item editing; Enter for other prompts) after resolving the failure, or cancel safely.
 - This check is **not atomic compare-and-swap**. Simultaneous edits or offline synchronization from different devices can still conflict because the complete document is stored as one field. There is no automatic item-level merge.
 - Invalid JSON, unsupported versions, invalid trees, and non-string data are shown as errors and not silently replaced. Repair the UDA externally or restore a backup, then refresh.
 - Limits: 64 KiB for the serialized document and import input, 2,000 items total, 2,000 lists, and nesting depth 16 (root depth zero). The byte limit may be reached before the item limit. Oversized data is rejected, not truncated.

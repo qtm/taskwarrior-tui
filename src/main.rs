@@ -57,6 +57,7 @@ use crate::{action::Action, event::Event, keyconfig::KeyConfig};
 const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S)} | {l} | {f}:{L} | {m}{n}";
 
 pub fn destruct_terminal() {
+  let _ = crate::event::disable_keyboard_enhancements();
   disable_raw_mode().unwrap();
   execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste).unwrap();
   execute!(io::stdout(), cursor::Show).unwrap();

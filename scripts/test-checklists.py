@@ -31,6 +31,8 @@ class Terminal:
         self.rows, self.cols = 48, 120
         self.screen = [[' '] * self.cols for _ in range(self.rows)]
         self.cursor = [0, 0]
+        self.keyboard_requests = []
+        self.transcript = ''
         self.decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
@@ -53,14 +55,25 @@ class Terminal:
                 if not chunk:
                     break
                 data.extend(chunk)
-        for token in re.findall(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b.|[^\x1b]', self.decoder.decode(data)):
+        decoded = self.decoder.decode(data)
+        self.transcript = (self.transcript + decoded)[-100000:]
+        for token in re.findall(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b.|[^\x1b]', decoded):
             if token.startswith('\x1b['):
                 op, params = token[-1], token[2:-1]
+                if params.startswith(('>', '<')):
+                    if op == 'u':
+                        self.keyboard_requests.append(params)
+                    continue
                 if params.startswith('?'):
                     continue
                 values = [int(v or 0) for v in params.split(';')] if params else [0]
                 n = values[0] or 1
-                if op in ('H', 'f'):
+                if op == 'n' and values[0] == 6:
+                    # Ratatui queries the cursor when clearing after a resume.
+                    row = min(max(self.cursor[0] + 1, 1), self.rows)
+                    col = min(max(self.cursor[1] + 1, 1), self.cols)
+                    os.write(self.fd, f'\x1b[{row};{col}R'.encode())
+                elif op in ('H', 'f'):
                     self.cursor = [n - 1, ((values[1] if len(values) > 1 else 1) or 1) - 1]
                 elif op == 'G': self.cursor[1] = n - 1
                 elif op == 'A': self.cursor[0] = max(0, self.cursor[0] - n)
@@ -148,6 +161,7 @@ uda.taskwarrior-tui.task-report.show-info=false
 uda.taskwarrior-tui.task-report.prompt-on-undo=false
 uda.taskwarrior-tui.task-report.info-location=bottom
 uda.taskwarrior-tui.tick-rate=0
+uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
 ''')
         one = '00000000-0000-0000-0000-000000000001'
         two = '00000000-0000-0000-0000-000000000002'
@@ -169,6 +183,7 @@ uda.taskwarrior-tui.tick-rate=0
         try:
             screen = terminal.read(1.5)
             assert 'TASK_ONE' in screen, screen
+            assert '>1' in terminal.keyboard_requests, 'Modified-key reporting was not requested'
             screen = terminal.send('I', 0.8)
             assert 'Import preview' in screen and '5/13 complete' in screen, screen
             assert not document()['lists']
@@ -187,7 +202,7 @@ uda.taskwarrior-tui.tick-rate=0
             terminal.send('I')
             terminal.send('\x1b')
             assert len(document()['lists']) == 1
-            clipboard.write_text('- [ ] valid\ninvalid prose')
+            clipboard.write_text('- [ ] valid\n- [y] malformed checkbox')
             terminal.send('I')
             screen = terminal.send('\r')
             assert 'Line 2' in screen and len(document()['lists']) == 1, screen
@@ -200,17 +215,24 @@ uda.taskwarrior-tui.tick-rate=0
             assert len(document()['lists']) == 2 and document()['lists'][0] == first
             terminal.send('e\x15')
             terminal.paste('Новая строка')
-            terminal.finish_edit()
-            assert document()['lists'][1]['items'][0]['text'] == 'Новая строка'
+            before_edit = document()
+            terminal.send('\r')
+            screen = terminal.paste('description\non multi line')
+            assert 'description' in screen and 'on multi line' in screen, screen
+            assert document() == before_edit, 'Enter must not save the item'
+            terminal.finish_edit('\x1b[13;2u')  # Shift+Enter via the enhanced keyboard protocol.
+            assert document()['lists'][1]['items'][0]['text'] == 'Новая строка\ndescription\non multi line'
             terminal.send('o')
             terminal.paste('дочерний')
-            terminal.finish_edit()
+            terminal.send('\r')
+            terminal.paste('another description')
+            terminal.finish_edit('\x13')  # Ctrl+s fallback on legacy terminals.
             terminal.send('>')
             assert document()['lists'][1]['items'][-1]['depth'] == 2
             terminal.send('<')
             assert document()['lists'][1]['items'][-1]['depth'] == 1
             terminal.send('\x1bk')
-            assert document()['lists'][1]['items'][1]['text'] == 'дочерний'
+            assert document()['lists'][1]['items'][1]['text'] == 'дочерний\nanother description'
             terminal.send('g')
             terminal.send('x')
             terminal.send('\x1b')
@@ -246,7 +268,7 @@ uda.taskwarrior-tui.tick-rate=0
             external = document()
             external['lists'][0]['title'] = 'Externally changed'
             command(one, 'modify', 'tuichecklist:' + json.dumps(external, ensure_ascii=False, separators=(',', ':')))
-            screen = terminal.send('\r', 0.8)
+            screen = terminal.send('\x1b[13;2u', 0.8)
             assert 'changed outside this editor' in screen, screen
             assert document() == external
             terminal.send('\x1b')
@@ -261,6 +283,18 @@ uda.taskwarrior-tui.tick-rate=0
             assert document()['lists'][-1]['items'][1]['checked']
             print('PASS: stale-write rejection and multiline terminal-paste fallback', flush=True)
 
+            fail.unlink()
+            clipboard.write_text((ROOT / 'tests/fixtures/checklist-multiline.md').read_text())
+            terminal.send('I')
+            screen = terminal.finish_edit()
+            items = document()['lists'][-1]['items']
+            assert len(items) == 5
+            assert items[0]['text'] == 'task\ntask description\non multi line'
+            assert items[1]['text'] == 'subtask\nanother description' and items[1]['depth'] == 1
+            assert items[3]['text'] == 'first level task with description\ndescription'
+            assert '  task description' in screen and '    another description' in screen, screen
+            print('PASS: multiline item editing, Shift+Enter, Ctrl+s, and nested Markdown descriptions', flush=True)
+
             terminal.send('C')
             screen = terminal.send('n', 0.8)
             assert 'Annotations — all tasks' in screen, screen
@@ -273,13 +307,25 @@ uda.taskwarrior-tui.tick-rate=0
             screen = terminal.send('z', 0.8)
             assert 'Checklists —' not in screen and 'Annotations — all tasks' not in screen, screen
             assert all(t['status'] == 'pending' for t in tasks().values())
-            terminal.send('q', 0.6)
+            terminal.send('1', 0.8)  # Suspend/resume around a harmless external shortcut.
+            terminal.wait_for(lambda screen: terminal.keyboard_requests.count('>1') == 2 and 'TASK_ONE' in screen)
+            assert terminal.keyboard_requests == ['>1', '<1', '>1'], terminal.keyboard_requests
+            terminal.send('q', 0.1)
+            deadline = time.monotonic() + 8
             pid, status = os.waitpid(terminal.pid, os.WNOHANG)
-            assert pid and os.waitstatus_to_exitcode(status) == 0
-            terminal.finished = True
+            while not pid and time.monotonic() < deadline:
+                terminal.read(0.1)
+                pid, status = os.waitpid(terminal.pid, os.WNOHANG)
+            terminal.finished = bool(pid)
+            assert pid and os.waitstatus_to_exitcode(status) == 0, (pid, status)
+            assert terminal.keyboard_requests == ['>1', '<1', '>1', '<1'], 'Keyboard reporting was not restored'
             print('PASS: pane restoration, transpose, details switch, and clean exit', flush=True)
         except Exception:
             Path('/tmp/taskwarrior-checklists-failed-screen.txt').write_text(terminal.read(0.1))
+            Path('/tmp/taskwarrior-checklists-failed-output.txt').write_text(terminal.transcript)
+            log = tmp / 'tui-data/taskwarrior-tui.log'
+            if log.exists():
+                shutil.copyfile(log, '/tmp/taskwarrior-checklists-failed.log')
             raise
         finally:
             terminal.stop()

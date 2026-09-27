@@ -67,7 +67,7 @@ impl Checklist {
       None => (self.items.len(), 0),
     };
     ensure!(depth <= MAX_DEPTH, "Maximum nesting depth is {MAX_DEPTH}");
-    valid_text(&text)?;
+    valid_item_text(&text)?;
     let item = Item::new(text, depth);
     let id = item.id;
     self.items.insert(at, item);
@@ -123,29 +123,43 @@ impl Checklist {
       .items
       .iter()
       .map(|item| {
-        format!(
+        let mut text = item.text.split('\n');
+        let mut markdown = format!(
           "{}- [{}] {}",
           "  ".repeat(item.depth as usize),
           if item.checked { 'x' } else { ' ' },
-          item.text
-        )
+          text.next().unwrap_or_default()
+        );
+        for description in text {
+          markdown.push('\n');
+          markdown.push_str(&"  ".repeat(item.depth as usize + 1));
+          markdown.push_str(description);
+        }
+        markdown
       })
       .collect::<Vec<_>>()
       .join("\n")
   }
 
-  /// Deliberately strict: never silently discard prose or malformed list items.
+  /// Checkbox lines determine nesting; subsequent text belongs to the preceding
+  /// item until the next checkbox. Malformed checkbox lines are still errors.
   pub fn from_markdown(markdown: &str) -> Result<Self> {
     ensure!(markdown.len() <= MAX_BYTES, "Markdown exceeds {MAX_BYTES} bytes");
     let mut list = Self::new("Checklist".into());
     let mut indents = Vec::new();
     let mut heading_seen = false;
+    let mut item_indent = 0;
+    let mut blank_lines = 0;
     for (line_number, original) in markdown.trim_start_matches('\u{feff}').lines().enumerate() {
       let line = original.trim_end_matches('\r');
       if line.trim().is_empty() {
+        if !list.items.is_empty() {
+          blank_lines += 1;
+        }
         continue;
       }
       let body = line.trim_start_matches(' ');
+      ensure!(!body.starts_with('\t'), "Line {}: use spaces, not tabs, for indentation", line_number + 1);
       if list.items.is_empty() && !heading_seen && body.starts_with('#') {
         let title = body.trim_start_matches('#');
         ensure!(title.starts_with(' '), "Line {}: expected a heading or checkbox", line_number + 1);
@@ -154,6 +168,23 @@ impl Checklist {
         heading_seen = true;
         continue;
       }
+      let checkbox = body.starts_with(['-', '*', '+']) && body[1..].trim_start().starts_with('[');
+      if !checkbox {
+        let item = list
+          .items
+          .last_mut()
+          .with_context(|| format!("Line {}: expected - [ ] text or - [x] text", line_number + 1))?;
+        let indentation = line.len() - body.len();
+        // Accept both indented and lazy (unindented) continuation lines. The
+        // last checkbox owns the description, including after a nested item.
+        let description = &line[indentation.min(item_indent + 2)..];
+        valid_text(description).with_context(|| format!("Line {}", line_number + 1))?;
+        item.text.push_str(&"\n".repeat(blank_lines + 1));
+        item.text.push_str(description);
+        blank_lines = 0;
+        continue;
+      }
+      blank_lines = 0;
       let parse_line = || -> Result<(usize, bool, String)> {
         ensure!(!body.starts_with('\t'), "use spaces, not tabs, for indentation");
         let bytes = body.as_bytes();
@@ -167,6 +198,7 @@ impl Checklist {
         Ok((line.len() - body.len(), bytes[3] != b' ', text))
       };
       let (indent, checked, text) = parse_line().with_context(|| format!("Line {}", line_number + 1))?;
+      item_indent = indent;
       match indents.last().copied() {
         None => indents.push(indent),
         Some(previous) if indent > previous => indents.push(indent),
@@ -253,7 +285,7 @@ impl Document {
       for (i, item) in list.items.iter().enumerate() {
         count += 1;
         ensure!(count <= MAX_ITEMS, "Too many checklist items (maximum {MAX_ITEMS})");
-        valid_text(&item.text)?;
+        valid_item_text(&item.text)?;
         ensure!(ids.insert(item.id), "Duplicate item ID");
         ensure!(
           item.depth <= MAX_DEPTH && (i != 0 || item.depth == 0) && item.depth <= previous_depth + 1,
@@ -268,6 +300,18 @@ impl Document {
   pub fn progress(&self) -> (usize, usize) {
     self.lists.iter().map(Checklist::progress).fold((0, 0), |(a, b), (c, d)| (a + c, b + d))
   }
+}
+
+fn valid_item_text(text: &str) -> Result<()> {
+  ensure!(
+    !text.split('\n').next().unwrap_or_default().trim().is_empty(),
+    "The first line must contain an item title"
+  );
+  ensure!(
+    !text.chars().any(|c| c.is_control() && c != '\n'),
+    "Item text may contain newlines but not other control characters"
+  );
+  Ok(())
 }
 
 fn valid_text(text: &str) -> Result<()> {
@@ -388,12 +432,52 @@ mod tests {
       "- [ ] ",
       "- [ ] parent\n\t- [ ] child",
       "- [ ] p\n    - [ ] c\n  - [ ] invalid",
-      "- [ ] p\nforgotten prose",
+      "- [ ] p\n- [y] invalid checkbox",
       "- [ ] control\u{1b}",
     ] {
       assert!(Checklist::from_markdown(text).is_err(), "{text:?}");
     }
-    assert!(format!("{:#}", Checklist::from_markdown("- [ ] ok\nnot a checkbox").unwrap_err()).contains("Line 2"));
+    assert!(format!("{:#}", Checklist::from_markdown("- [ ] ok\n- [y] invalid checkbox").unwrap_err()).contains("Line 2"));
+  }
+
+  #[test]
+  fn multiline_markdown_preserves_descriptions_and_nesting() {
+    let list = Checklist::from_markdown(include_str!("../tests/fixtures/checklist-multiline.md")).unwrap();
+    assert_eq!(list.progress(), (0, 5));
+    assert_eq!(list.items[0].text, "task\ntask description\non multi line");
+    assert_eq!(list.items[1].text, "subtask\nanother description");
+    assert_eq!(list.items[1].depth, 1);
+    assert_eq!(list.items[2].depth, 0);
+    assert!(!list.items[2].text.contains('\n'));
+    assert_eq!(list.items[3].text, "first level task with description\ndescription");
+    let canonical = list.markdown();
+    assert!(canonical.contains("  - [ ] subtask\n    another description"));
+    let parsed = Checklist::from_markdown(&canonical).unwrap();
+    for (before, after) in list.items.iter().zip(&parsed.items) {
+      assert_eq!((&before.text, before.depth, before.checked), (&after.text, after.depth, after.checked));
+    }
+    let document = Document {
+      version: 1,
+      lists: vec![list],
+    };
+    assert_eq!(Document::decode(Some(&document.encode().unwrap())).unwrap(), document);
+  }
+
+  #[test]
+  fn multiline_blank_lines_crlf_and_validation() {
+    let list = Checklist::from_markdown("- [x] Title\r\nfirst line\r\n\r\n  Второй абзац\r\n\r\n- [ ] Next\r\n").unwrap();
+    assert_eq!(list.items[0].text, "Title\nfirst line\n\nВторой абзац");
+    assert_eq!(list.progress(), (1, 2));
+    assert!(valid_item_text("Title\n\nUnicode 猫").is_ok());
+    assert!(valid_item_text("\nDescription without title").is_err());
+    assert!(valid_item_text("Title\nControl \u{1b}").is_err());
+    assert!(valid_text("Multiline\nlist name").is_err());
+    let mut doc = Document {
+      version: 1,
+      lists: vec![list],
+    };
+    doc.lists[0].items[0].text.push_str(&"\n".repeat(MAX_BYTES));
+    assert!(doc.encode().is_err());
   }
 
   #[test]

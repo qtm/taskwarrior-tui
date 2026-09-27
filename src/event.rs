@@ -1,6 +1,6 @@
 use crossterm::event::{
   KeyCode::{BackTab, Backspace, Char, Delete, Down, End, Enter, Esc, F, Home, Insert, Left, Null, PageDown, PageUp, Right, Tab, Up},
-  KeyEvent, KeyModifiers, MouseEventKind,
+  KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use futures::StreamExt;
 use log::{Level, LevelFilter, debug, error, info, log_enabled, trace, warn};
@@ -43,6 +43,73 @@ pub enum KeyCode {
   Null,
   Esc,
   Tab,
+  ShiftEnter,
+}
+
+/// Preserve modified Enter instead of turning both keys into a newline.
+fn input_key(key: KeyEvent) -> Option<KeyCode> {
+  if key.kind == KeyEventKind::Release {
+    return None;
+  }
+  Some(match key.code {
+    Backspace => match key.modifiers {
+      KeyModifiers::CONTROL => KeyCode::CtrlBackspace,
+      KeyModifiers::ALT => KeyCode::AltBackspace,
+      _ => KeyCode::Backspace,
+    },
+    Delete => match key.modifiers {
+      KeyModifiers::CONTROL => KeyCode::CtrlDelete,
+      KeyModifiers::ALT => KeyCode::AltDelete,
+      _ => KeyCode::Delete,
+    },
+    Enter if key.modifiers.contains(KeyModifiers::SHIFT) => KeyCode::ShiftEnter,
+    Enter => KeyCode::Char('\n'),
+    Left => KeyCode::Left,
+    Right => KeyCode::Right,
+    Up => KeyCode::Up,
+    Down => KeyCode::Down,
+    Home => KeyCode::Home,
+    End => KeyCode::End,
+    PageUp => KeyCode::PageUp,
+    PageDown => KeyCode::PageDown,
+    Tab => KeyCode::Tab,
+    BackTab => KeyCode::BackTab,
+    Insert => KeyCode::Insert,
+    F(k) => KeyCode::F(k),
+    Null => KeyCode::Null,
+    Esc => KeyCode::Esc,
+    Char(c) => match key.modifiers {
+      KeyModifiers::NONE | KeyModifiers::SHIFT => KeyCode::Char(c),
+      KeyModifiers::CONTROL => KeyCode::Ctrl(c),
+      KeyModifiers::ALT => KeyCode::Alt(c),
+      _ => KeyCode::Null,
+    },
+    _ => KeyCode::Null,
+  })
+}
+
+#[cfg(unix)]
+static KEYBOARD_ENHANCEMENTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Unsupported terminals ignore the protocol request; Ctrl-s is the save fallback.
+pub fn enable_keyboard_enhancements() -> std::io::Result<()> {
+  #[cfg(unix)]
+  if !KEYBOARD_ENHANCEMENTS.load(std::sync::atomic::Ordering::Relaxed) {
+    crossterm::execute!(
+      std::io::stdout(),
+      crossterm::event::PushKeyboardEnhancementFlags(crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
+    KEYBOARD_ENHANCEMENTS.store(true, std::sync::atomic::Ordering::Relaxed);
+  }
+  Ok(())
+}
+
+pub fn disable_keyboard_enhancements() -> std::io::Result<()> {
+  #[cfg(unix)]
+  if KEYBOARD_ENHANCEMENTS.swap(false, std::sync::atomic::Ordering::Relaxed) {
+    crossterm::execute!(std::io::stdout(), crossterm::event::PopKeyboardEnhancementFlags)?;
+  }
+  Ok(())
 }
 
 pub struct EventLoop {
@@ -82,45 +149,9 @@ impl EventLoop {
                   if let Some(Ok(event)) = maybe_event {
                       match event {
                           crossterm::event::Event::Key(key) => {
-                              let key = match key.code {
-                                  Backspace => {
-                                      match key.modifiers {
-                                          KeyModifiers::CONTROL => KeyCode::CtrlBackspace,
-                                          KeyModifiers::ALT => KeyCode::AltBackspace,
-                                          _ => KeyCode::Backspace,
-                                      }
-                                  },
-                                  Delete => {
-                                      match key.modifiers {
-                                          KeyModifiers::CONTROL => KeyCode::CtrlDelete,
-                                          KeyModifiers::ALT => KeyCode::AltDelete,
-                                          _ => KeyCode::Delete,
-                                      }
-                                  },
-                                  Enter => KeyCode::Char('\n'),
-                                  Left => KeyCode::Left,
-                                  Right => KeyCode::Right,
-                                  Up => KeyCode::Up,
-                                  Down => KeyCode::Down,
-                                  Home => KeyCode::Home,
-                                  End => KeyCode::End,
-                                  PageUp => KeyCode::PageUp,
-                                  PageDown => KeyCode::PageDown,
-                                  Tab => KeyCode::Tab,
-                                  BackTab => KeyCode::BackTab,
-                                  Insert => KeyCode::Insert,
-                                  F(k) => KeyCode::F(k),
-                                  Null => KeyCode::Null,
-                                  Esc => KeyCode::Esc,
-                                  Char(c) => match key.modifiers {
-                                      KeyModifiers::NONE | KeyModifiers::SHIFT => KeyCode::Char(c),
-                                      KeyModifiers::CONTROL => KeyCode::Ctrl(c),
-                                      KeyModifiers::ALT => KeyCode::Alt(c),
-                                      _ => KeyCode::Null,
-                                  },
-                                  _ => KeyCode::Null,
-                              };
-                              _tx.send(Event::Input(key)).unwrap_or_else(|_| warn!("Unable to send {:?} event", key));
+                              if let Some(key) = input_key(key) {
+                                  _tx.send(Event::Input(key)).unwrap_or_else(|_| warn!("Unable to send {:?} event", key));
+                              }
                           }
                           crossterm::event::Event::Paste(paste) => {
                               _tx.send(Event::Paste(paste)).unwrap_or_else(|_| warn!("Unable to send paste event"));
@@ -150,5 +181,26 @@ impl EventLoop {
     }
 
     Self { tx, rx, tick_rate, abort }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn modified_enter_and_release_events_are_distinguished() {
+    assert_eq!(input_key(KeyEvent::new(Enter, KeyModifiers::NONE)), Some(KeyCode::Char('\n')));
+    assert_eq!(input_key(KeyEvent::new(Enter, KeyModifiers::SHIFT)), Some(KeyCode::ShiftEnter));
+    assert_eq!(input_key(KeyEvent::new(Char('s'), KeyModifiers::CONTROL)), Some(KeyCode::Ctrl('s')));
+    assert_eq!(
+      input_key(KeyEvent::new_with_kind(Enter, KeyModifiers::SHIFT, KeyEventKind::Release)),
+      None
+    );
+    assert_eq!(
+      input_key(KeyEvent::new_with_kind(Enter, KeyModifiers::NONE, KeyEventKind::Repeat)),
+      Some(KeyCode::Char('\n'))
+    );
+    assert_eq!(input_key(KeyEvent::new(Char('A'), KeyModifiers::SHIFT)), Some(KeyCode::Char('A')));
   }
 }

@@ -49,8 +49,9 @@ use crate::{
   history::HistoryContext,
   keyconfig::KeyConfig,
   pane::{
-    Pane,
+    Pane, SecondaryPane,
     annotations::AnnotationsState,
+    checklist::ChecklistsState,
     context::{ContextDetails, ContextsState},
     project::ProjectsState,
     report::ReportsState,
@@ -177,6 +178,7 @@ pub struct TaskwarriorTui {
   pub report: String,
   pub projects: ProjectsState,
   pub annotations: AnnotationsState,
+  pub checklists: ChecklistsState,
   pub contexts: ContextsState,
   pub reports: ReportsState,
   pub task_version: Versioning,
@@ -278,6 +280,7 @@ impl TaskwarriorTui {
       report: report.to_string(),
       projects: ProjectsState::new(),
       annotations: AnnotationsState::default(),
+      checklists: ChecklistsState::default(),
       contexts: ContextsState::new(),
       reports: ReportsState::new(),
       task_version,
@@ -421,6 +424,7 @@ impl TaskwarriorTui {
     }
 
     match self.mode {
+      Mode::Tasks(Action::Checklist) => self.checklists.paste(text, &mut self.changes),
       Mode::Tasks(Action::Add | Action::Annotate | Action::Log) => {
         self.command_history.reset();
         Self::insert_text(&mut self.command, text, &mut self.changes);
@@ -716,14 +720,29 @@ impl TaskwarriorTui {
     }
   }
 
+  pub fn secondary_pane(&self) -> SecondaryPane {
+    if self.checklists.visible {
+      SecondaryPane::Checklist
+    } else if self.annotations.visible {
+      SecondaryPane::Annotations
+    } else if self.task_report_info_show {
+      SecondaryPane::TaskDetails
+    } else {
+      SecondaryPane::Hidden
+    }
+  }
+
   pub fn draw_task(&mut self, f: &mut Frame, layout: Rect, action: Action) {
+    if self.checklists.visible {
+      self.checklists.sync_task(self.task_current());
+    }
     let rects = Layout::default()
       .direction(Direction::Vertical)
       .constraints([Constraint::Min(0), Constraint::Length(2)].as_ref())
       .split(layout);
 
-    // Annotations temporarily replace task details in the same 50/50 split.
-    if self.task_report_info_show || self.annotations.visible {
+    // Temporary panes share one region, preserving the underlying details preference.
+    if self.secondary_pane() != SecondaryPane::Hidden {
       let direction = match self.task_info_location(rects[0].width) {
         TaskInfoLocation::Bottom => Direction::Vertical,
         TaskInfoLocation::Right => Direction::Horizontal,
@@ -736,10 +755,11 @@ impl TaskwarriorTui {
 
       self.task_report_height = split_task_layout[0].height;
       self.draw_task_report(f, split_task_layout[0]);
-      if self.annotations.visible {
-        self.annotations.draw(f, split_task_layout[1], &self.config, &self.keyconfig);
-      } else {
-        self.draw_task_details(f, split_task_layout[1]);
+      match self.secondary_pane() {
+        SecondaryPane::Checklist => self.checklists.draw(f, split_task_layout[1], &self.config, &self.keyconfig),
+        SecondaryPane::Annotations => self.annotations.draw(f, split_task_layout[1], &self.config, &self.keyconfig),
+        SecondaryPane::TaskDetails => self.draw_task_details(f, split_task_layout[1]),
+        SecondaryPane::Hidden => unreachable!(),
       }
     } else {
       self.task_report_height = rects[0].height;
@@ -771,6 +791,7 @@ impl TaskwarriorTui {
 
   fn handle_task_mode_action(&mut self, f: &mut Frame, rects: &[Rect], task_ids: &[String], action: Action) {
     match action {
+      Action::Checklist => self.checklists.draw_editor(f, rects[1], &self.config),
       Action::Error => {
         self.draw_command(
           f,
@@ -1600,11 +1621,24 @@ impl TaskwarriorTui {
     }
     let selected = self.current_selection;
     let header = headers.iter();
+    let project_columns: Vec<_> = self
+      .task_report_table
+      .visible_column_indices()
+      .into_iter()
+      .enumerate()
+      .filter_map(|(visible, original)| (self.task_report_table.columns[original].trim() == "project").then_some(visible))
+      .collect();
+    let mut cell_styles = HashMap::new();
     let mut rows = vec![];
     let mut highlight_style = Style::default();
     let mut pos = 0;
     for (i, task) in tasks.iter().enumerate() {
       let style = self.task_report_row_style(i, &self.tasks[i]);
+      if let Some(project_style) = self.tasks[i].project().and_then(|project| self.config.project_title_style(project)) {
+        for &column in &project_columns {
+          cell_styles.insert((i, column), project_style);
+        }
+      }
       if i == selected {
         pos = i;
         highlight_style = style.patch(self.config.uda_style_report_selection);
@@ -1633,6 +1667,7 @@ impl TaskwarriorTui {
       .collect();
 
     let t = Table::new(header, rows.into_iter())
+      .cell_styles(cell_styles)
       .header_style(
         self
           .config
@@ -3050,13 +3085,27 @@ impl TaskwarriorTui {
   }
 
   pub async fn handle_input(&mut self, input: KeyCode) -> Result<()> {
+    if input == self.keyconfig.checklist && matches!(self.mode, Mode::Projects | Mode::Timesheet | Mode::Calendar) {
+      self.checklists.toggle(&mut self.mode);
+      self.checklists.sync_task(self.task_current());
+      return Ok(());
+    }
+    if self.handle_checklist_input(input).await? {
+      return Ok(());
+    }
+    if input == self.keyconfig.annotations && self.checklists.visible && self.mode == Mode::Tasks(Action::Report) {
+      self.checklists.hide();
+      if self.annotations.visible {
+        return Ok(());
+      }
+    }
     if input == self.keyconfig.annotations && self.annotations.toggle(&mut self.mode) {
       if self.annotations.visible {
         self.annotations.refresh(&self.task_exe);
       }
       return Ok(());
     }
-    if self.annotations.visible && self.mode == Mode::Tasks(Action::Report) {
+    if self.secondary_pane() == SecondaryPane::Annotations && self.mode == Mode::Tasks(Action::Report) {
       if input == KeyCode::Esc {
         self.annotations.toggle(&mut self.mode);
         return Ok(());
@@ -3466,8 +3515,9 @@ impl TaskwarriorTui {
               }
             }
           } else if input == self.keyconfig.zoom {
-            if self.annotations.visible {
+            if self.annotations.visible || self.checklists.visible {
               self.annotations.hide();
+              self.checklists.hide();
               self.task_report_info_show = true;
             } else {
               self.task_report_info_show = !self.task_report_info_show;
@@ -3642,6 +3692,7 @@ impl TaskwarriorTui {
             self.help_popup.scroll = self.help_popup.scroll.saturating_sub(1);
           }
         }
+        Action::Checklist => self.handle_checklist_editor(input).await?,
         Action::Modify => match input {
           KeyCode::Esc => {
             if self.show_completion_pane {
@@ -4672,6 +4723,112 @@ mod tests {
       .map(|y| (rect.x..rect.right()).map(|x| buffer[(x, y)].symbol()).collect::<String>())
       .collect::<Vec<_>>()
       .join("\n")
+  }
+
+  #[tokio::test]
+  async fn test_checklist_pane_focus_layout_and_restore() {
+    use crate::checklist::{Checklist, Document, UDA};
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    set_annotation_test_tasks(&mut app);
+    let doc = Document {
+      version: 1,
+      lists: vec![Checklist::from_markdown(include_str!("../tests/fixtures/checklist-ru.md")).unwrap()],
+    };
+    app.tasks[0].uda_mut().insert(UDA.into(), UDAValue::Str(doc.encode().unwrap()));
+    app.tasks[0].set_project(Some("work"));
+    app.config.project_title_styles.insert("work".into(), Style::default().fg(Color::Green));
+    app.config.uda_style_title = Style::default().fg(Color::Red);
+    app.annotations.visible = true;
+    app.task_exe = "/checklist-test-must-not-run-task".into();
+    for location in [TaskInfoLocation::Bottom, TaskInfoLocation::Right] {
+      app.config.uda_task_report_info_location = location;
+      app.handle_input(app.keyconfig.checklist).await.unwrap();
+      assert_eq!(app.secondary_pane(), SecondaryPane::Checklist);
+      assert!(!app.checklists.focused);
+      let mut terminal = Terminal::new(TestBackend::new(120, 44)).unwrap();
+      terminal.draw(|f| app.draw_task(f, f.area(), Action::Report)).unwrap();
+      let screen = buffer_view(terminal.backend().buffer());
+      assert!(screen.contains("- [x] Применить terraform"), "{screen}");
+      assert!(screen.contains("  - [x] Добавить tech"), "{screen}");
+      assert!(screen.contains("5/13 complete"), "{screen}");
+      let (x, y) = if location == TaskInfoLocation::Bottom { (0, 22) } else { (60, 1) };
+      assert_eq!(terminal.backend().buffer()[(x, y)].fg, Color::Green);
+      assert_eq!(terminal.backend().buffer()[(x + 4, y)].fg, Color::Red);
+      assert_eq!(app.task_report_height, if location == TaskInfoLocation::Bottom { 21 } else { 42 });
+      app.handle_input(KeyCode::Tab).await.unwrap();
+      assert!(app.checklists.focused);
+      app.handle_input(app.keyconfig.down).await.unwrap();
+      assert_eq!(app.current_selection, 0);
+      app.handle_input(app.keyconfig.done).await.unwrap();
+      assert_eq!(app.mode, Mode::Tasks(Action::Report)); // No destructive fallthrough.
+      app.handle_input(app.keyconfig.checklist).await.unwrap();
+      assert_eq!(app.secondary_pane(), SecondaryPane::Annotations);
+    }
+    for mode in [Mode::Projects, Mode::Timesheet, Mode::Calendar] {
+      app.mode = mode.clone();
+      app.handle_input(app.keyconfig.checklist).await.unwrap();
+      assert_eq!(app.mode, Mode::Tasks(Action::Report));
+      app.handle_input(KeyCode::Esc).await.unwrap();
+      assert_eq!(app.mode, mode);
+    }
+    app.mode = Mode::Tasks(Action::Report);
+    app.handle_input(app.keyconfig.checklist).await.unwrap();
+    app.handle_input(app.keyconfig.zoom).await.unwrap();
+    assert_eq!(app.secondary_pane(), SecondaryPane::TaskDetails);
+    app.handle_input(app.keyconfig.checklist).await.unwrap();
+    app.handle_input(app.keyconfig.down).await.unwrap();
+    assert_eq!(app.current_selection, 1); // Report navigation remains active before Tab.
+  }
+
+  #[tokio::test]
+  async fn test_checklist_edit_keeps_task_identity_and_preserves_draft_on_error() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    set_annotation_test_tasks(&mut app);
+    app.task_exe = "/checklist-test-must-not-run-task".into();
+    app.handle_input(app.keyconfig.checklist).await.unwrap();
+    app.handle_input(KeyCode::Tab).await.unwrap();
+    app.handle_input(app.keyconfig.add).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Checklist));
+    app.handle_paste("Новый пункт");
+    app.handle_input(app.keyconfig.annotations).await.unwrap();
+    app.handle_input(app.keyconfig.checklist).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Checklist));
+    assert!(!app.annotations.visible);
+    app.current_selection = 1;
+    app.handle_input(KeyCode::Char('\n')).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Checklist));
+    assert!(app.checklists.editor.as_ref().unwrap().error.is_some());
+    app.handle_input(KeyCode::Esc).await.unwrap();
+    assert_eq!(app.mode, Mode::Tasks(Action::Report));
+    assert!(app.checklists.editor.is_none());
+    assert!(app.tasks.iter().all(|task| !task.uda().contains_key(crate::checklist::UDA)));
+  }
+
+  #[tokio::test]
+  async fn test_project_title_style_targets_project_column_with_custom_labels_and_hidden_columns() {
+    let mut app = TaskwarriorTui::new("next", false).await.unwrap();
+    set_annotation_test_tasks(&mut app);
+    app.tasks[0].set_project(Some("work"));
+    app.tasks[1].set_project(Some("home"));
+    app.config.rule_precedence_color = vec!["project.".into()];
+    app.config.color.insert("color.project.work".into(), Style::default().fg(Color::Red));
+    app.config.project_title_styles.insert("work".into(), Style::default().fg(Color::Green));
+    app.config.uda_style_report_selection = Style::default().bg(Color::Blue);
+    app.config.uda_selection_reverse = false;
+    app.task_report_table.columns = vec!["id".into(), "tags".into(), "project".into(), "description".into()];
+    app.task_report_table.labels = vec!["ID".into(), "Empty".into(), "Area".into(), "Description".into()];
+    let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+    terminal.draw(|f| app.draw_task_report(f, f.area())).unwrap();
+    let buffer = terminal.backend().buffer();
+    assert!(!buffer_view(buffer).contains("Empty"));
+    assert!(buffer_view(buffer).contains("Area"));
+    let project_x = (0..80).find(|&x| buffer[(x, 2)].symbol() == "w").unwrap();
+    let task_x = (0..80).find(|&x| buffer[(x, 2)].symbol() == "T").unwrap();
+    assert_eq!(buffer[(project_x, 2)].fg, Color::Green);
+    assert_eq!(buffer[(project_x, 2)].bg, Color::Blue);
+    assert_eq!(buffer[(task_x, 2)].fg, Color::Red);
+    assert_eq!(buffer[(task_x, 2)].bg, Color::Blue);
+    assert_eq!(app.style_for_task(&app.tasks[0]).fg, Some(Color::Red));
   }
 
   #[tokio::test]
@@ -6530,7 +6687,7 @@ mod tests {
       "│                                      │",
       "│    [: Previous view                  │",
       "╰──────────────────────────────────────╯",
-      "  7% ───────────────────────────────────",
+      "  5% ───────────────────────────────────",
     ]);
 
     for i in 1..=4 {
@@ -6540,7 +6697,6 @@ mod tests {
     expected[(3, 11)].set_style(Style::default().fg(Color::Reset));
     expected[(4, 11)].set_style(Style::default().fg(Color::Reset));
     expected[(5, 11)].set_style(Style::default().fg(Color::Gray));
-    expected[(6, 11)].set_style(Style::default().fg(Color::Gray));
 
     let mut app = TaskwarriorTui::new("next", false).await.unwrap();
 

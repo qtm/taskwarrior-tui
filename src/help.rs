@@ -49,6 +49,8 @@ fn keycode_for(name: &str, kc: &KeyConfig) -> KeyCode {
     "transpose" => kc.transpose,
     "annotate" => kc.annotate,
     "annotations" => kc.annotations,
+    "checklist" => kc.checklist,
+    "import_checklist" => kc.import_checklist,
     "refresh" => kc.refresh,
     "shell" => kc.shell,
     "shortcut0" => kc.shortcut0,

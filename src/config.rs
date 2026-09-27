@@ -81,6 +81,7 @@ pub struct Config {
   pub enabled: bool,
   pub color: HashMap<String, Style>,
   pub color_keywords: Vec<(String, Style)>,
+  pub project_title_styles: HashMap<String, Style>,
   pub filter: String,
   pub data_location: String,
   pub obfuscate: bool,
@@ -156,6 +157,12 @@ impl Config {
     let print_empty_columns = bool_collection.get("print_empty_columns").copied().unwrap_or(false);
 
     let color = Self::get_color_collection(data);
+    let project_title_styles = data
+      .lines()
+      .filter_map(|line| line.strip_prefix("uda.taskwarrior-tui.style.project-title."))
+      .map(Self::parse_named_style)
+      .filter(|(project, _)| !project.is_empty())
+      .collect();
     let color_keywords: Vec<(String, Style)> = color
       .iter()
       .filter_map(|(key, style)| key.strip_prefix("color.keyword.").map(|kw| (kw.to_string(), *style)))
@@ -247,6 +254,7 @@ impl Config {
       enabled,
       color,
       color_keywords,
+      project_title_styles,
       filter,
       data_location,
       obfuscate,
@@ -314,6 +322,20 @@ impl Config {
     })
   }
 
+  /// Use the most specific project style, falling back along dotted project ancestors.
+  /// These styles are independent of Taskwarrior's whole-row color rules.
+  pub fn project_title_style(&self, mut project: &str) -> Option<Style> {
+    if project.is_empty() {
+      return None;
+    }
+    loop {
+      if let Some(style) = self.project_title_styles.get(project) {
+        return Some(*style);
+      }
+      project = project.rsplit_once('.')?.0;
+    }
+  }
+
   fn get_bool_collection() -> HashMap<String, bool> {
     HashMap::new()
   }
@@ -360,13 +382,17 @@ impl Config {
       return None;
     }
 
+    Some(Self::parse_named_style(line))
+  }
+
+  fn parse_named_style(line: &str) -> (String, Style) {
     if let Some(delimiter) = Self::find_color_config_delimiter(line) {
       let attribute = line[..delimiter].trim_end().to_string();
       let style = Self::get_tcolor(line[delimiter..].trim_start());
-      return Some((attribute, style));
+      return (attribute, style);
     }
 
-    Some((line.trim_end().to_string(), Style::default()))
+    (line.trim_end().to_string(), Style::default())
   }
 
   fn find_color_config_delimiter(line: &str) -> Option<usize> {
@@ -897,6 +923,47 @@ impl Config {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn test_project_title_styles_are_separate_and_inherit_by_project_component() {
+    let data = [
+      "data.location /unused",
+      "rule.precedence.color project.",
+      "uda.priority.values H,M,L,",
+      "color.project.work red",
+      "uda.taskwarrior-tui.style.project-title.work bold blue",
+      "uda.taskwarrior-tui.style.project-title.work.client color208",
+      "uda.taskwarrior-tui.style.project-title.work.client.plain  ",
+      "uda.taskwarrior-tui.style.project-title.Team Blue  underline green on color234",
+      "uda.taskwarrior-tui.style.project-title.研究  color111",
+    ]
+    .join("\n");
+    let config = Config::new(&data, "next").unwrap();
+    assert_eq!(config.project_title_style("work"), Some(Config::get_tcolor("bold blue")));
+    assert_eq!(config.project_title_style("work.other"), config.project_title_style("work"));
+    assert_eq!(config.project_title_style("work.client.api"), Some(Config::get_tcolor("color208")));
+    assert_eq!(config.project_title_style("work.client.plain"), Some(Style::default()));
+    assert_eq!(
+      config.project_title_style("Team Blue.subproject"),
+      Some(Config::get_tcolor("underline green on color234"))
+    );
+    assert_eq!(config.project_title_style("研究"), Some(Config::get_tcolor("color111")));
+    assert_eq!(config.project_title_style("workshop"), None);
+    assert_eq!(config.project_title_style(""), None);
+    assert_eq!(config.color.get("color.project.work"), Some(&Config::get_tcolor("red")));
+    assert_eq!(config.color.len(), 1);
+  }
+
+  #[test]
+  fn test_project_title_styles_are_opt_in() {
+    let config = Config::new(
+      "data.location /unused\nrule.precedence.color project.\nuda.priority.values H,M,L,\ncolor.project.work red",
+      "next",
+    )
+    .unwrap();
+    assert!(config.project_title_styles.is_empty());
+    assert_eq!(config.project_title_style("work"), None);
+  }
 
   #[test]
   fn test_config_collects_keyword_colors() {

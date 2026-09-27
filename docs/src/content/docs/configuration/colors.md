@@ -41,6 +41,28 @@ uda.taskwarrior-tui.style.report.scrollbar
 uda.taskwarrior-tui.style.report.scrollbar.area
 ```
 
+## Project-name-only colors
+
+To color **only project names**, add per-project TUI styles to `~/.taskrc`:
+
+```plaintext
+uda.taskwarrior-tui.style.project-title.work=bold blue
+uda.taskwarrior-tui.style.project-title.personal=green
+uda.taskwarrior-tui.style.project-title.work.client=color208
+```
+
+These styles apply to:
+
+- Project values in the task report's `project` column, even with a custom column label.
+- The project-name portion of each grouped heading in the annotations pane (`n`).
+- The project name in the checklist pane (`C`).
+
+Task descriptions, IDs, dates, annotation text, column headings, and selection markers are not recolored. Existing row/selection styles remain underneath the project-name style. All color formats and modifiers below are supported.
+
+Subprojects inherit the nearest configured parent's style: `work.other` uses `work`, while `work.client.api` uses `work.client`. Matching respects dot-separated components, so `workshop` does not inherit `work`. Projects without a matching setting keep their normal styling; an empty per-project value disables inherited title styling for that project and its children.
+
+This setting is independent of Taskwarrior's `color.project.<name>`, which **still colors entire task rows**. For title-only coloring, replace any corresponding `color.project.<name>` entries with the new `uda.taskwarrior-tui.style.project-title.<name>` entries. Restart the TUI to reload styles.
+
 ## Color Formats
 
 All color formats supported by Taskwarrior are recognized:

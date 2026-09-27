@@ -9,9 +9,20 @@ use crate::{
 };
 
 pub mod annotations;
+pub mod checklist;
 pub mod context;
 pub mod project;
 pub mod report;
+
+/// One rendering decision for the shared secondary-pane region. Task details
+/// retain their configured preference underneath temporary panes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecondaryPane {
+  Hidden,
+  TaskDetails,
+  Annotations,
+  Checklist,
+}
 
 pub trait Pane {
   fn handle_input(app: &mut TaskwarriorTui, input: KeyCode) -> Result<()>;

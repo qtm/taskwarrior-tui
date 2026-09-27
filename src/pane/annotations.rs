@@ -6,7 +6,7 @@ use ratatui::{
   Frame,
   layout::{Constraint, Direction, Layout, Rect},
   style::{Modifier, Style},
-  text::Line,
+  text::{Line, Span},
   widgets::{Block, Borders, Paragraph},
 };
 use task_hookrs::{import::import, task::Task};
@@ -27,13 +27,16 @@ struct AnnotationEntry {
 }
 
 impl AnnotationEntry {
-  fn heading(&self) -> String {
+  fn heading(&self, style: Style, project_style: Option<Style>) -> [Span<'static>; 2] {
     let project = if self.project.is_empty() { "(no project)" } else { &self.project };
     let id = self
       .task_id
       .map(|id| id.to_string())
       .unwrap_or_else(|| self.task_uuid.to_string()[..8].to_string());
-    format!("{project} / [{id}] {}", self.task)
+    [
+      Span::styled(project.to_string(), style.patch(project_style.unwrap_or_default())),
+      Span::styled(format!(" / [{id}] {}", self.task), style),
+    ]
   }
 }
 
@@ -137,7 +140,9 @@ impl AnnotationsState {
     entries
   }
 
-  fn lines(&self, width: u16, heading_style: Style, date_style: Style) -> Vec<Line<'static>> {
+  fn lines(&self, width: u16, config: &Config) -> Vec<Line<'static>> {
+    let heading_style = config.uda_style_title.add_modifier(Modifier::BOLD);
+    let date_style = config.color.get("color.label").copied().unwrap_or_default();
     let mut lines = Vec::new();
     let mut previous_task = None;
     for entry in &self.entries {
@@ -145,7 +150,8 @@ impl AnnotationsState {
         if previous_task.is_some() {
           lines.push(Line::default());
         }
-        push_wrapped(&mut lines, &entry.heading(), width, "", heading_style);
+        let heading = entry.heading(heading_style, config.project_title_style(&entry.project));
+        push_wrapped_spans(&mut lines, &heading, width, "", heading_style);
       }
       push_wrapped(&mut lines, &datetime::format_local_date_time(&entry.entry), width, "  ", date_style);
       push_wrapped(&mut lines, &entry.description, width, "    ", Style::default());
@@ -174,11 +180,7 @@ impl AnnotationsState {
     } else if self.entries.is_empty() {
       vec![Line::from("No annotations found.")]
     } else {
-      self.lines(
-        body.width,
-        config.uda_style_title.add_modifier(Modifier::BOLD),
-        config.color.get("color.label").copied().unwrap_or_default(),
-      )
+      self.lines(body.width, config)
     };
     self.viewport_height = usize::from(body.height);
     self.max_scroll = lines.len().saturating_sub(self.viewport_height.max(1));
@@ -217,29 +219,44 @@ fn key_label(key: KeyCode) -> String {
 
 /// Wrap at grapheme boundaries, preserving newlines and indentation. Prewrapping
 /// makes scrolling and resize clamping use the exact number of displayed lines.
-fn push_wrapped(lines: &mut Vec<Line<'static>>, text: &str, width: u16, indent: &str, style: Style) {
+pub(crate) fn push_wrapped(lines: &mut Vec<Line<'static>>, text: &str, width: u16, indent: &str, style: Style) {
+  push_wrapped_spans(lines, &[Span::styled(text, style)], width, indent, style);
+}
+
+pub(crate) fn push_wrapped_spans(lines: &mut Vec<Line<'static>>, spans: &[Span<'_>], width: u16, indent: &str, style: Style) {
   let width = usize::from(width);
   if width == 0 {
     return;
   }
   let indent = if indent.width() < width { indent } else { "" };
-  for source in text.split('\n') {
-    let mut line = indent.to_string();
-    let mut used = indent.width();
-    for grapheme in source.graphemes(true) {
+  let new_line = || Line::styled(indent.to_string(), style);
+  let mut line = new_line();
+  let mut used = indent.width();
+  for span in spans {
+    for grapheme in span.content.graphemes(true) {
+      if grapheme == "\n" || grapheme == "\r\n" {
+        lines.push(std::mem::replace(&mut line, new_line()));
+        used = indent.width();
+        continue;
+      }
       // A terminal cannot display a wide grapheme in a one-column viewport.
       let grapheme = if grapheme.width() > width - indent.width() { "�" } else { grapheme };
       let size = grapheme.width();
       if used + size > width {
-        lines.push(Line::styled(line, style));
-        line = indent.to_string();
+        lines.push(std::mem::replace(&mut line, new_line()));
         used = indent.width();
       }
-      line.push_str(grapheme);
+      if let Some(last) = line.spans.last_mut()
+        && last.style == span.style
+      {
+        last.content.to_mut().push_str(grapheme);
+      } else {
+        line.spans.push(Span::styled(grapheme.to_string(), span.style));
+      }
       used += size;
     }
-    lines.push(Line::styled(line, style));
   }
+  lines.push(line);
 }
 
 #[cfg(test)]
@@ -280,11 +297,7 @@ mod tests {
       entries: AnnotationsState::entries_from_tasks(&tasks()),
       ..Default::default()
     };
-    let lines: Vec<String> = state
-      .lines(100, Style::default(), Style::default())
-      .iter()
-      .map(ToString::to_string)
-      .collect();
+    let lines: Vec<String> = state.lines(100, &test_config()).iter().map(ToString::to_string).collect();
     assert_eq!(lines.iter().filter(|line| line.as_str() == "work / [1] First task").count(), 2);
     for annotation in ["newest", "adjacent", "middle", "oldest", "retained"] {
       assert_eq!(lines.iter().filter(|line| line.trim() == annotation).count(), 1);
@@ -370,12 +383,16 @@ mod tests {
     }
   }
 
-  fn render(state: &mut AnnotationsState, width: u16, height: u16) -> String {
-    let config = Config::new(
+  fn test_config() -> Config {
+    Config::new(
       "data.location /unused\nrule.precedence.color project.\nuda.priority.values H,M,L,",
       "next",
     )
-    .unwrap();
+    .unwrap()
+  }
+
+  fn render(state: &mut AnnotationsState, width: u16, height: u16) -> String {
+    let config = test_config();
     let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
     terminal.draw(|f| state.draw(f, f.area(), &config, &KeyConfig::default())).unwrap();
     terminal
@@ -492,6 +509,52 @@ mod tests {
     std::fs::remove_file(task.0.join("task")).unwrap();
     state.refresh(&task.executable());
     assert!(state.error.as_ref().unwrap().contains("Unable to run Taskwarrior export"));
+  }
+
+  #[test]
+  fn project_title_color_only_affects_project_names_even_when_wrapped() {
+    use ratatui::{buffer::Buffer, layout::Rect, style::Color, widgets::Widget};
+    let mut config = test_config();
+    config.uda_style_title = Style::default().fg(Color::Cyan);
+    config.project_title_styles.insert("work".into(), Style::default().fg(Color::Green));
+    let mut state = AnnotationsState {
+      entries: AnnotationsState::entries_from_tasks(&tasks()),
+      ..Default::default()
+    };
+    state.entries.truncate(1);
+    state.entries[0].project = "work.猫猫".into();
+    state.entries[0].task = "TASK".into();
+    state.entries[0].description = "NOTE".into();
+    let lines = state.lines(100, &config);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 100, 6));
+    Paragraph::new(lines).render(buffer.area, &mut buffer);
+    for x in [0, 1, 2, 3, 4, 5, 7] {
+      assert_eq!(buffer[(x, 0)].fg, Color::Green);
+    }
+    for x in 9..20 {
+      assert_eq!(
+        buffer[(x, 0)].fg,
+        Color::Cyan,
+        "separator, ID and task description must keep heading style"
+      );
+    }
+    assert_eq!(buffer[(4, 2)].fg, Color::Reset);
+    assert_eq!(buffer[(2, 1)].fg, Color::Reset);
+
+    // The project wraps before the heading's metadata; no color may leak past it.
+    let mut wrapped = Buffer::empty(Rect::new(0, 0, 5, 20));
+    Paragraph::new(state.lines(5, &config)).render(wrapped.area, &mut wrapped);
+    assert_eq!(wrapped[(0, 0)].fg, Color::Green);
+    assert_eq!(wrapped[(0, 1)].symbol(), "猫");
+    assert_eq!(wrapped[(0, 1)].fg, Color::Green);
+    assert_eq!(wrapped[(4, 1)].symbol(), " ");
+    assert_eq!(wrapped[(4, 1)].fg, Color::Cyan);
+    assert_eq!(wrapped[(0, 2)].symbol(), "/");
+    assert_eq!(wrapped[(0, 2)].fg, Color::Cyan);
+
+    state.entries[0].project.clear();
+    let heading = state.lines(100, &config).remove(0);
+    assert!(heading.spans.iter().all(|span| span.style.fg != Some(Color::Green)));
   }
 
   #[test]

@@ -31,6 +31,8 @@ pub struct KeyConfig {
   pub add: KeyCode,
   pub annotate: KeyCode,
   pub annotations: KeyCode,
+  pub checklist: KeyCode,
+  pub import_checklist: KeyCode,
   pub help: KeyCode,
   pub filter: KeyCode,
   pub zoom: KeyCode,
@@ -81,6 +83,8 @@ impl Default for KeyConfig {
       add: KeyCode::Char('a'),
       annotate: KeyCode::Char('A'),
       annotations: KeyCode::Char('n'),
+      checklist: KeyCode::Char('C'),
+      import_checklist: KeyCode::Char('I'),
       help: KeyCode::Char('?'),
       filter: KeyCode::Char('/'),
       zoom: KeyCode::Char('z'),
@@ -138,6 +142,8 @@ impl KeyConfig {
     let add = Self::get_config("uda.taskwarrior-tui.keyconfig.add", data);
     let annotate = Self::get_config("uda.taskwarrior-tui.keyconfig.annotate", data);
     let annotations = Self::get_config("uda.taskwarrior-tui.keyconfig.annotations", data);
+    let checklist = Self::get_config("uda.taskwarrior-tui.keyconfig.checklist", data);
+    let import_checklist = Self::get_config("uda.taskwarrior-tui.keyconfig.import-checklist", data);
     let filter = Self::get_config("uda.taskwarrior-tui.keyconfig.filter", data);
     let zoom = Self::get_config("uda.taskwarrior-tui.keyconfig.zoom", data);
     let transpose = Self::get_config("uda.taskwarrior-tui.keyconfig.transpose", data);
@@ -179,6 +185,8 @@ impl KeyConfig {
     self.add = add.unwrap_or(self.add);
     self.annotate = annotate.unwrap_or(self.annotate);
     self.annotations = annotations.unwrap_or(self.annotations);
+    self.checklist = checklist.unwrap_or(self.checklist);
+    self.import_checklist = import_checklist.unwrap_or(self.import_checklist);
     self.filter = filter.unwrap_or(self.filter);
     self.zoom = zoom.unwrap_or(self.zoom);
     self.transpose = transpose.unwrap_or(self.transpose);
@@ -225,6 +233,8 @@ impl KeyConfig {
       &self.add,
       &self.annotate,
       &self.annotations,
+      &self.checklist,
+      &self.import_checklist,
       &self.help,
       &self.filter,
       &self.zoom,
@@ -271,6 +281,22 @@ fn has_just_one_char(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn checklist_keys_are_configurable_and_reject_conflicts() {
+    let defaults = KeyConfig::default();
+    assert_eq!(defaults.checklist, KeyCode::Char('C'));
+    assert_eq!(defaults.import_checklist, KeyCode::Char('I'));
+    let keys = KeyConfig::new("uda.taskwarrior-tui.keyconfig.checklist B\nuda.taskwarrior-tui.keyconfig.import-checklist P").unwrap();
+    assert_eq!(keys.checklist, KeyCode::Char('B'));
+    assert_eq!(keys.import_checklist, KeyCode::Char('P'));
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.checklist I").is_err());
+    assert!(KeyConfig::new("uda.taskwarrior-tui.keyconfig.import-checklist x").is_err());
+    let help = crate::help::Help::new(&keys);
+    assert!(!help.text.contains("{{"));
+    assert!(help.text.contains("B: checklists"));
+    assert!(help.text.contains("P: import checklist"));
+  }
 
   #[test]
   fn annotations_key_defaults_to_n_and_can_be_remapped() {

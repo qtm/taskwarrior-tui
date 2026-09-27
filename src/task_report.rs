@@ -268,42 +268,17 @@ impl TaskReportTable {
     }
   }
 
+  /// Original column indices retained in the rendered table, regardless of custom labels.
+  pub fn visible_column_indices(&self) -> Vec<usize> {
+    (0..self.columns.len())
+      .filter(|&i| self.tasks.iter().any(|task| !task[i].is_empty()))
+      .collect()
+  }
+
   pub fn simplify_table(&mut self) -> (Vec<Vec<String>>, Vec<String>) {
-    // find which columns are empty
-    if self.tasks.is_empty() {
-      return (vec![], vec![]);
-    }
-
-    let mut null_columns = vec![0; self.tasks[0].len()];
-
-    for task in &self.tasks {
-      for (i, s) in task.iter().enumerate() {
-        null_columns[i] += s.len();
-      }
-    }
-
-    // filter out columns where everything is empty
-    let mut tasks = vec![];
-    for task in &self.tasks {
-      let t = task.clone();
-      let t: Vec<String> = t
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| null_columns[i] != 0)
-        .map(|(_, e)| e.clone())
-        .collect();
-      tasks.push(t);
-    }
-
-    // filter out header where all columns are empty
-    let headers: Vec<String> = self
-      .labels
-      .iter()
-      .enumerate()
-      .filter(|&(i, _)| null_columns[i] != 0)
-      .map(|(_, e)| e.clone())
-      .collect();
-
+    let columns = self.visible_column_indices();
+    let tasks = self.tasks.iter().map(|task| columns.iter().map(|&i| task[i].clone()).collect()).collect();
+    let headers = columns.iter().map(|&i| self.labels[i].clone()).collect();
     (tasks, headers)
   }
 
@@ -312,6 +287,7 @@ impl TaskReportTable {
 
     let value = match attribute {
       "id" => task.id().unwrap_or_default().to_string(),
+      crate::checklist::UDA => crate::checklist::summary(task),
       "scheduled.relative" => match task.scheduled() {
         Some(v) => vague_format_date_time(
           Local::now().naive_utc(),

@@ -4,6 +4,7 @@ pub enum Action {
   Filter,
   Add,
   Annotate,
+  Checklist,
   Subprocess,
   Log,
   Modify,

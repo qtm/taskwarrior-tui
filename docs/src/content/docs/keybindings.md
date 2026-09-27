@@ -17,6 +17,12 @@ Keybindings:
 
     n: annotations                       - Toggle half-screen annotations pane
 
+    C: checklists                        - Toggle half-screen Markdown checklists pane
+
+    I: import checklist                  - Preview Markdown from clipboard for selected task
+
+See [checklists](./checklists.md) for checklist focus, nested-item editing, and clipboard import controls. `Tab` switches between task and checklist focus; task controls remain active while the task list has focus.
+
 Keybindings for task report:
 
     /: task {string}                     - Filter task report
@@ -148,7 +154,7 @@ Each entry contains one annotation and its creation date/time, with a project/ta
 - `r`: refresh tasks and annotations (database changes are also picked up on normal refresh ticks).
 - `q`: quit the application.
 
-Customize the toggle with `uda.taskwarrior-tui.keyconfig.annotations` in your `.taskrc`.
+Customize the toggle with `uda.taskwarrior-tui.keyconfig.annotations` in your `.taskrc`. To color only the project names in annotation headings, use [`uda.taskwarrior-tui.style.project-title.<project>`](./configuration/colors.md#project-name-only-colors).
 
 Keybindings for calendar:
 

@@ -6,7 +6,11 @@
 mod action;
 mod app;
 mod calendar;
+mod checklist;
+#[cfg(test)]
+mod checklist_tests;
 mod cli;
+mod clipboard;
 mod completion;
 mod config;
 mod datetime;

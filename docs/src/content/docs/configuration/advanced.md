@@ -54,11 +54,25 @@ uda.taskwarrior-tui.style.title=         # default: LightCyan foreground
 uda.taskwarrior-tui.style.title.border=  # default: White foreground
 uda.taskwarrior-tui.style.help.gauge=    # default: Gray foreground
 uda.taskwarrior-tui.style.command.error= # default: Red foreground
+# Optional project-name-only styles (also used in annotations and checklist panes):
+# uda.taskwarrior-tui.style.project-title.work=bold blue
+# uda.taskwarrior-tui.style.project-title.work.client=color208
 ```
 
 See [color configuration](./colors.md) for supported color formats and additional TUI style keys such as `uda.taskwarrior-tui.style.navbar` and `uda.taskwarrior-tui.style.command`.
 
 The `uda.taskwarrior-tui.task-report.next.filter` variable defines the default view at program startup. Set this to any preconfigured report from `task reports`, or create your own report in Taskwarrior and specify its name here.
+
+## Checklists
+
+The checklist pane (`C`) stores nested Markdown-style checklists in the task's `tuichecklist` string UDA. `I` previews clipboard Markdown and attaches it as a new list after confirmation. See [checklists](../checklists.md) for nesting, clipboard prerequisites, editing, and data-safety details.
+
+The TUI supplies these definitions for its own checklist commands. Optionally add them to `.taskrc` for other Taskwarrior clients and for reports containing a `tuichecklist` column:
+
+```plaintext
+uda.tuichecklist.type=string
+uda.tuichecklist.label=Checklist
+```
 
 ## Legacy Config Aliases
 

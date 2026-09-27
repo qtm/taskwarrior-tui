@@ -25,7 +25,7 @@ export default defineConfig({
       sidebar: [
         {
           label: "Getting Started",
-          items: ["installation", "quick_start", "keybindings", "troubleshooting", "faqs"],
+          items: ["installation", "quick_start", "keybindings", "checklists", "troubleshooting", "faqs"],
         },
         {
           label: "Configuration",

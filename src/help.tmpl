@@ -10,6 +10,10 @@ Keybindings:
 
     {{annotations}}: annotations                       - Toggle half-screen annotations pane
 
+    {{checklist}}: checklists                         - Toggle half-screen Markdown checklists pane
+
+    {{import_checklist}}: import checklist                    - Preview Markdown from clipboard for selected task
+
 Keybindings for task report:
 
     {{filter}}: task {string}                     - Filter task report
@@ -157,6 +161,38 @@ Keybindings for annotations pane (newest first, all tasks):
     {{transpose}}: transpose split                    - Toggle bottom / right placement
 
     {{refresh}}: refresh                               - Reload tasks and annotations
+
+Keybindings for checklists (Tab switches task / checklist focus):
+
+    {{checklist}} / Esc: close                       - Restore the previous pane / view
+
+    {{import_checklist}}: import Markdown                    - Clipboard preview; Enter attaches a NEW list
+
+    {{down}} / {{up}} or arrows: move                   - Select an item (when checklist has focus)
+
+    Space: check                        - Toggle only the selected item, not its children
+
+    {{add}} / o: add sibling / child              - Enter saves; Esc cancels
+
+    {{edit}} / {{delete}}: edit / delete                    - Deleting a subtree requires confirmation
+
+    > / <: indent / outdent              - Move selected item and its children
+
+    Alt-j / Alt-k: reorder               - Move subtree down / up among siblings
+
+    [ / ]: previous / next list          - Switch named checklists
+
+    A / E / X: manage lists              - Add / rename / confirm deletion of a list
+
+    Ctrl-e/y, Ctrl-d/u: scroll           - Read long items without changing selection
+
+    {{undo}}: undo                               - Global Taskwarrior undo, not checklist-only history
+
+    Import prompt: terminal paste       - Preserve Markdown newlines / indentation
+
+    Import prompt: Ctrl-u / Ctrl-n       - Clear input / insert newline
+
+    Import prompt: PgUp / PgDn           - Scroll the preview
 
 Keybindings for calendar:
 

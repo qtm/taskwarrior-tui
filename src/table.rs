@@ -162,6 +162,8 @@ pub struct Table<'a, H, R> {
   mark_highlight_symbol: Option<&'a str>,
   /// Symbol in front of the unmarked and selected row
   unmark_highlight_symbol: Option<&'a str>,
+  /// Text-only style overrides keyed by absolute (row, column) indices.
+  cell_styles: HashMap<(usize, usize), Style>,
   /// Data to display in each row
   rows: R,
 }
@@ -186,6 +188,7 @@ where
       unmark_symbol: None,
       mark_highlight_symbol: None,
       unmark_highlight_symbol: None,
+      cell_styles: HashMap::new(),
       rows: R::default(),
     }
   }
@@ -212,6 +215,7 @@ where
       unmark_symbol: None,
       mark_highlight_symbol: None,
       unmark_highlight_symbol: None,
+      cell_styles: HashMap::new(),
       rows,
     }
   }
@@ -296,6 +300,12 @@ where
 
   pub fn header_gap(mut self, gap: u16) -> Table<'a, H, R> {
     self.header_gap = gap;
+    self
+  }
+
+  /// Override cell text without coloring padding, selection markers, or neighboring cells.
+  pub fn cell_styles(mut self, styles: HashMap<(usize, usize), Style>) -> Self {
+    self.cell_styles = styles;
     self
   }
 }
@@ -517,6 +527,22 @@ where
             }
           };
           buf.set_stringn(x, y + i as u16, s, *w as usize, style);
+          if let Some(cell_style) = self.cell_styles.get(&(i + state.offset, c)) {
+            let text = elt.to_string();
+            let prefix_width = if c == 0 { symbol.width() } else { 0 };
+            let content_width = (*w as usize).saturating_sub(prefix_width);
+            let offset = if c == header_index {
+              // Match format!'s character-based right alignment exactly, including for
+              // wide project names under a custom "ID" label. Styling must not move text.
+              prefix_width + content_width.saturating_sub(text.chars().count())
+            } else {
+              prefix_width
+            };
+            let available = (*w as usize).saturating_sub(offset);
+            if available > 0 {
+              buf.set_stringn(x + offset as u16, y + i as u16, text, available, style.patch(*cell_style));
+            }
+          }
           x += *w + self.column_spacing;
         }
       }
@@ -535,5 +561,102 @@ where
   fn render(self, area: Rect, buf: &mut Buffer) {
     let mut state = TaskwarriorTuiTableState::default();
     StatefulWidget::render(self, area, buf, &mut state);
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use ratatui::style::{Color, Modifier};
+
+  #[test]
+  fn cell_styles_only_color_text_and_preserve_selection_and_padding() {
+    let base = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let highlight = base.bg(Color::Blue).add_modifier(Modifier::BOLD);
+    let project = Style::default().fg(Color::Green).add_modifier(Modifier::ITALIC);
+    let rows = vec![
+      Row::StyledData(["home", "other"].into_iter(), base),
+      Row::StyledData(["work", "task"].into_iter(), base),
+    ];
+    let widths = [Constraint::Length(8), Constraint::Length(8)];
+    let table = Table::new(["Project", "Description"].into_iter(), rows.into_iter())
+      .widths(&widths)
+      .highlight_symbol(">")
+      .highlight_style(highlight)
+      .cell_styles(HashMap::from([((1, 0), project)]));
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 22, 5));
+    let mut state = TaskwarriorTuiTableState::default();
+    state.select(Some(1));
+    StatefulWidget::render(table, buffer.area, &mut buffer, &mut state);
+    assert_eq!(buffer[(0, 3)].symbol(), ">");
+    assert_eq!(buffer[(0, 3)].fg, Color::White);
+    for x in 1..5 {
+      assert_eq!(buffer[(x, 3)].fg, Color::Green);
+      assert_eq!(buffer[(x, 3)].bg, Color::Blue);
+      assert!(buffer[(x, 3)].modifier.contains(Modifier::BOLD | Modifier::ITALIC));
+    }
+    for x in 5..17 {
+      assert_eq!(
+        buffer[(x, 3)].fg,
+        Color::White,
+        "padding and description must retain the row style at {x}"
+      );
+    }
+    assert_eq!(buffer[(1, 2)].fg, Color::White);
+  }
+
+  #[test]
+  fn cell_styles_do_not_change_text_layout_for_truncated_unicode_or_custom_id_labels() {
+    for label in ["ID", "Project"] {
+      for text in ["work", "work.long.project", "猫猫", "e\u{301}👩‍💻"] {
+        for width in 2..=8 {
+          let render = |colored| {
+            let widths = [Constraint::Length(width), Constraint::Length(5)];
+            let styles = if colored {
+              HashMap::from([((0, 0), Style::default().fg(Color::Green))])
+            } else {
+              HashMap::new()
+            };
+            let table = Table::new([label, "Task"].into_iter(), vec![Row::Data([text, "task"].into_iter())].into_iter())
+              .widths(&widths)
+              .highlight_symbol(">")
+              .cell_styles(styles);
+            let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 4));
+            Widget::render(table, buffer.area, &mut buffer);
+            buffer.content.iter().map(|cell| cell.symbol().to_string()).collect::<Vec<_>>()
+          };
+          assert_eq!(render(false), render(true), "{label}, {text}, width {width}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn cell_styles_follow_absolute_rows_when_scrolling_and_keep_markers_uncolored() {
+    let base = Style::default().fg(Color::White);
+    let rows = (0..5).map(|_| Row::StyledData(["1", "猫猫"].into_iter(), base));
+    let widths = [Constraint::Length(4), Constraint::Length(7)];
+    let table = Table::new(["ID", "Project"].into_iter(), rows)
+      .widths(&widths)
+      .header_gap(0)
+      .mark_highlight_symbol("@")
+      .highlight_style(base.bg(Color::Blue))
+      .cell_styles(HashMap::from([((4, 1), Style::default().fg(Color::Red))]));
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 4));
+    let mut state = TaskwarriorTuiTableState::default();
+    state.multiple_selection();
+    state.select(Some(4));
+    state.mark(Some(4));
+    StatefulWidget::render(table, buffer.area, &mut buffer, &mut state);
+    assert_eq!(state.offset, 2);
+    assert_eq!(buffer[(0, 3)].symbol(), "@");
+    assert_eq!(buffer[(0, 3)].fg, Color::White);
+    for x in [5, 7] {
+      assert_eq!(buffer[(x, 3)].symbol(), "猫");
+      assert_eq!(buffer[(x, 3)].fg, Color::Red);
+      assert_eq!(buffer[(x, 3)].bg, Color::Blue);
+    }
+    assert_eq!(buffer[(9, 3)].fg, Color::White);
+    assert_eq!(buffer[(5, 1)].fg, Color::White);
   }
 }

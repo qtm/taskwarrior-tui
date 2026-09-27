@@ -140,9 +140,53 @@ impl AnnotationsState {
     entries
   }
 
-  /// Reuse the timeline's sorting and formatting without exporting unrelated tasks.
+  /// Checklist-only layout: dates on the left and annotation text on the right.
+  /// Sorting, local time formatting and heading colors match the all-task timeline.
   pub(super) fn task_lines(task: &Task, width: u16, config: &Config) -> Vec<Line<'static>> {
-    Self::format_entries(&Self::entries_from_tasks(std::slice::from_ref(task)), width, config)
+    let entries = Self::entries_from_tasks(std::slice::from_ref(task));
+    // Two columns need at least one cell each plus a gap. Only degenerate
+    // viewports fall back to stacked text, without dropping either value.
+    if width < 3 {
+      return Self::format_entries(&entries, width, config);
+    }
+    let mut lines = Vec::new();
+    let Some(first) = entries.first() else {
+      return lines;
+    };
+    let heading_style = config.uda_style_title.add_modifier(Modifier::BOLD);
+    let heading = first.heading(heading_style, config.project_title_style(&first.project));
+    push_wrapped_spans(&mut lines, &heading, width, "", heading_style);
+
+    let dates: Vec<_> = entries.iter().map(|entry| datetime::format_local_date_time(&entry.entry)).collect();
+    let gap = if width == 3 { 1 } else { 2 };
+    // Reserve at least half the usable width for text. On narrow splits the
+    // date wraps within its column; all annotation continuations stay aligned.
+    let date_width = dates
+      .iter()
+      .map(|date| date.width())
+      .max()
+      .unwrap_or(0)
+      .min(usize::from((width - gap) / 2)) as u16;
+    let text_width = width - date_width - gap;
+    let date_style = config.color.get("color.label").copied().unwrap_or_default();
+    for (entry, date) in entries.iter().zip(dates) {
+      let mut date_lines = Vec::new();
+      let mut text_lines = Vec::new();
+      push_wrapped(&mut date_lines, &date, date_width, "", date_style);
+      push_wrapped(&mut text_lines, &entry.description, text_width, "", Style::default());
+      let row_count = date_lines.len().max(text_lines.len());
+      let mut date_lines = date_lines.into_iter();
+      let mut text_lines = text_lines.into_iter();
+      for _ in 0..row_count {
+        let date_line = date_lines.next().unwrap_or_default();
+        let padding = usize::from(date_width + gap).saturating_sub(date_line.width());
+        let mut spans = date_line.spans;
+        spans.push(Span::raw(" ".repeat(padding)));
+        spans.extend(text_lines.next().unwrap_or_default().spans);
+        lines.push(Line::from(spans));
+      }
+    }
+    lines
   }
 
   fn lines(&self, width: u16, config: &Config) -> Vec<Line<'static>> {
@@ -324,6 +368,61 @@ mod tests {
     tasks.reverse();
     assert_eq!(first_order, AnnotationsState::entries_from_tasks(&tasks));
     assert_ne!(first_order[0].task_uuid, first_order[1].task_uuid);
+  }
+
+  #[test]
+  fn checklist_annotation_columns_are_newest_first_without_changing_the_global_timeline() {
+    let tasks = tasks();
+    let task = &tasks[0];
+    let config = test_config();
+    let columns = AnnotationsState::task_lines(task, 100, &config);
+    assert_eq!(columns.len(), 4); // One task heading and one row per annotation.
+    assert_eq!(columns[0].to_string(), "work / [1] First task");
+    for (row, index) in [1, 2, 0].into_iter().enumerate() {
+      let annotation = &task.annotations().unwrap()[index];
+      let date = datetime::format_local_date_time(annotation.entry());
+      assert_eq!(columns[row + 1].to_string(), format!("{date}  {}", annotation.description()));
+    }
+    assert!(AnnotationsState::task_lines(&tasks[3], 100, &config).is_empty());
+    let timeline = AnnotationsState {
+      entries: AnnotationsState::entries_from_tasks(&tasks),
+      ..Default::default()
+    };
+    let lines = timeline.lines(100, &config);
+    let newest = datetime::format_local_date_time(&timeline.entries[0].entry);
+    assert_eq!(lines[1].to_string(), format!("  {newest}"));
+    assert_eq!(lines[2].to_string(), "    newest");
+  }
+
+  #[test]
+  fn checklist_annotation_columns_keep_multiline_unicode_text_aligned_and_fit_narrow_panes() {
+    let config = test_config();
+    let mut task = tasks().remove(0);
+    task.annotations_mut().unwrap().truncate(1);
+    *task.annotations_mut().unwrap()[0].description_mut() = "long annotation text wraps here\nПривет 猫 e\u{301}👩‍💻\n\nlast".into();
+    let date = datetime::format_local_date_time(task.annotations().unwrap()[0].entry());
+    let lines = AnnotationsState::task_lines(&task, 40, &config);
+    let text: Vec<_> = lines.iter().map(ToString::to_string).collect();
+    let indent = " ".repeat(21);
+    assert_eq!(text[1], format!("{date}  long annotation tex"));
+    assert_eq!(text[2], format!("{indent}t wraps here"));
+    assert_eq!(text[3], format!("{indent}Привет 猫 e\u{301}👩‍💻"));
+    assert_eq!(text[4], indent);
+    assert_eq!(text[5], format!("{indent}last"));
+    assert!(lines.iter().all(|line| line.width() <= 40));
+
+    *task.annotations_mut().unwrap()[0].description_mut() = "short".into();
+    let lines = AnnotationsState::task_lines(&task, 20, &config);
+    let text: Vec<_> = lines.iter().map(ToString::to_string).collect();
+    let first = text.iter().position(|line| line.starts_with(&date[..9])).unwrap();
+    assert_eq!(text[first], format!("{}  short", &date[..9]));
+    assert_eq!(text[first + 1], format!("{}  ", &date[9..18]));
+    assert_eq!(text[first + 2], format!("{:<9}  ", &date[18..]));
+    assert!(lines.iter().all(|line| line.width() <= 20));
+    for width in 0..=30 {
+      let lines = AnnotationsState::task_lines(&task, width, &config);
+      assert!(lines.iter().all(|line| line.width() <= usize::from(width)), "width={width}");
+    }
   }
 
   #[test]

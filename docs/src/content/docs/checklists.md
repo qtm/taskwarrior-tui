@@ -29,7 +29,15 @@ The pane displays literal Markdown task-list markers, nested indentation, and pr
 
 ## Task annotations
 
-Below the displayed checklist, the pane shows **only the highlighted task's annotations**, newest first. They use the same project/task headings, local timestamps, colors, indentation, and Unicode wrapping as the all-task annotation view (`n`). Annotations also remain available when the task has no checklists.
+Below the displayed checklist, the pane shows **only the highlighted task's annotations**, newest first. Dates appear in the **left column**, with annotation text in the **right column**. Long or multiline notes wrap underneath their text, leaving the date column blank on continuation lines:
+
+```text
+2026-01-03 12:00:00  Latest note
+2026-01-02 09:30:00  An older, longer annotation
+                     continued in the text column
+```
+
+Project/task heading colors and local timestamps are retained. Narrow panes wrap the date within its column to leave room for note text; at widths below three cells, the layout falls back to stacked text. Annotations also remain available when the task has no checklists. The standalone all-task annotation view (`n`) is unchanged.
 
 Use **Ctrl-e/Ctrl-y** to scroll down/up or **Ctrl-d/Ctrl-u** for a page, with either task or checklist focus. Scrolling does not change the selected checkbox; annotations are read-only here and never count toward checklist progress. Switching tasks updates both sections; `r` refreshes them. Import previews show only the draft, without annotations.
 
@@ -138,7 +146,9 @@ With task focus, normal task controls remain active and the checklist follows th
 
 The pane uses the same bottom/right location and 50/50 split as task details and annotations. `\` transposes the split. `n` switches to annotations; `z` switches to task details. Toggling checklists off restores the underlying pane and task-details preference.
 
-Project names reuse `uda.taskwarrior-tui.style.project-title.<project>` colors without coloring checklist text. Checked items are dimmed unless selected. When the checklist has focus (**Tab**), the current item is highlighted across the full pane width, including wrapped continuation lines. By default the highlight is bold reverse-video; an explicit `uda.taskwarrior-tui.style.report.selection` replaces the default style, and `uda.taskwarrior-tui.selection.*` modifiers also apply. Returning focus to the task list removes the active checklist highlight.
+Only the checkbox markers are colored: **green `[x]`** and **red `[ ]`**. Bullets, item titles, descriptions, and wrapped continuation text keep their normal text color. This also applies to clipboard import previews. Each nested item uses its own checkbox state; checked items are not automatically dimmed. Project names independently reuse `uda.taskwarrior-tui.style.project-title.<project>` colors; annotation text is not affected by checkbox colors.
+
+When the checklist has focus (**Tab**), the current item is highlighted across the full pane width, including wrapped continuation lines. By default the highlight is bold reverse-video, with status colors confined to the checkbox marker. An explicit `uda.taskwarrior-tui.style.report.selection` replaces the default highlight; its foreground/background colors override the marker's colors while selected, and `uda.taskwarrior-tui.selection.*` modifiers also apply. Returning focus to the task list removes the active highlight and retains the red/green checkbox markers.
 
 ## Configuration and reports
 

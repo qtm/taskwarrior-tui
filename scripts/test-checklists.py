@@ -30,6 +30,8 @@ class Terminal:
     def __init__(self, executable, env, respond_to_cursor_queries=True):
         self.rows, self.cols = 48, 120
         self.screen = [[' '] * self.cols for _ in range(self.rows)]
+        self.foregrounds = [[None] * self.cols for _ in range(self.rows)]
+        self.foreground = None
         self.cursor = [0, 0]
         self.keyboard_requests = []
         self.cursor_queries = 0
@@ -84,21 +86,49 @@ class Terminal:
                 elif op == 'B': self.cursor[0] += n
                 elif op == 'C': self.cursor[1] += n
                 elif op == 'D': self.cursor[1] = max(0, self.cursor[1] - n)
+                elif op == 'm':
+                    index = 0
+                    while index < len(values):
+                        code = values[index]
+                        if code in (0, 39):
+                            self.foreground = None
+                        elif 30 <= code <= 37:
+                            self.foreground = code - 30
+                        elif 90 <= code <= 97:
+                            self.foreground = code - 90 + 8
+                        elif code in (38, 48, 58) and index + 1 < len(values):
+                            mode = values[index + 1]
+                            count = 1 if mode == 5 else 3 if mode == 2 else 0
+                            if count and index + 1 + count < len(values):
+                                if code == 38:
+                                    self.foreground = values[index + 2] if mode == 5 else tuple(values[index + 2:index + 5])
+                                index += 1 + count
+                        index += 1
                 elif op == 'J' and values[0] == 2:
                     self.screen_clears += 1
                     self.screen = [[' '] * self.cols for _ in range(self.rows)]
+                    self.foregrounds = [[None] * self.cols for _ in range(self.rows)]
                 elif op == 'K' and self.cursor[0] < self.rows:
                     start = 0 if values[0] in (1, 2) else self.cursor[1]
                     end = self.cursor[1] + 1 if values[0] == 1 else self.cols
                     self.screen[self.cursor[0]][start:end] = [' '] * (end - start)
+                    self.foregrounds[self.cursor[0]][start:end] = [None] * (end - start)
             elif token == '\r': self.cursor[1] = 0
             elif token == '\n': self.cursor[0] += 1
             elif not token.startswith('\x1b') and ord(token) >= 32:
                 row, col = self.cursor
                 if 0 <= row < self.rows and 0 <= col < self.cols:
                     self.screen[row][col] = token
+                    self.foregrounds[row][col] = self.foreground
                 self.cursor[1] += 1
         return '\n'.join(''.join(row).rstrip() for row in self.screen)
+
+    def color_of(self, text, offset=0):
+        for y, row in enumerate(self.screen):
+            line = ''.join(row)
+            if text in line:
+                return self.foregrounds[y][line.index(text) + offset]
+        raise AssertionError(f'Missing text: {text}')
 
     def send(self, keys, seconds=0.3):
         os.write(self.fd, keys.encode())
@@ -197,17 +227,30 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             screen = terminal.send('I', 0.8)
             assert 'Import preview' in screen and '5/13 complete' in screen, screen
             assert 'Annotations — current task' not in screen and 'NEW_TASK_ONE_NOTE' not in screen
+            assert terminal.color_of('- [x] Применить terraform', 2) == 2, 'Checked preview markers must be green'
+            assert terminal.color_of('- [ ] Секреты в vault', 2) == 1, 'Unchecked preview markers must be red'
+            assert terminal.color_of('- [x] Применить terraform') is None, 'Bullets must not use status colors'
+            assert terminal.color_of('Применить terraform') is None, 'Item titles must not use status colors'
+            assert terminal.color_of('Секреты в vault') is None
             assert not document()['lists']
             screen = terminal.finish_edit()
             first = document()['lists'][0]
             assert len(first['items']) == 13 and sum(i['depth'] == 1 for i in first['items']) == 4
             assert '  - [x] Добавить tech' in screen and '5/13 complete' in screen, screen
             assert '5/13' in screen.split('Checklists')[0], screen
-            print('PASS: clipboard preview, Cyrillic nesting, attachment, and report progress', flush=True)
+            assert terminal.color_of('- [x] Применить terraform', 2) == 2
+            assert terminal.color_of('- [ ] Секреты в vault', 2) == 1
+            assert terminal.color_of('Применить terraform') is None
+            assert terminal.color_of('Секреты в vault') is None
+            print('PASS: clipboard preview, Cyrillic nesting, marker-only status colors, attachment, and report progress', flush=True)
 
             screen = terminal.send('\x04')  # Scroll annotations with checklist focus.
             assert 'Annotations — current task' in screen and '2 annotations (local time)' in screen, screen
             assert screen.index('NEW_TASK_ONE_NOTE') < screen.index('OLD_TASK_ONE_NOTE'), screen
+            for note in ('NEW_TASK_ONE_NOTE', 'OLD_TASK_ONE_NOTE'):
+                row = next(line for line in screen.splitlines() if note in line)
+                assert re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  ' + note, row), row
+                assert terminal.color_of(note) is None, 'Item status colors must not leak into annotations'
             assert 'OTHER_TASK_NOTE' not in screen, screen
             terminal.send('\t')
             screen = terminal.send('j')  # Follow the highlighted task, even with no checklists.
@@ -228,6 +271,10 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             terminal.send(' ')
             changed = document()['lists'][0]['items']
             assert not changed[0]['checked'] and changed[1]['checked']
+            assert terminal.color_of('- [ ] Применить terraform', 2) == 1, 'Toggling must update the marker color'
+            assert terminal.color_of('- [x] Добавить tech', 2) == 2, 'Child color stays independent'
+            assert terminal.color_of('Применить terraform') is None
+            assert terminal.color_of('Добавить tech') is None
             terminal.send('u', 0.8)
             assert document()['lists'][0] == first
             terminal.send('I')
@@ -253,6 +300,9 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             assert document() == before_edit, 'Enter must not save the item'
             terminal.finish_edit('\x1b[13;2u')  # Shift+Enter via the enhanced keyboard protocol.
             assert document()['lists'][1]['items'][0]['text'] == 'Новая строка\ndescription\non multi line'
+            assert terminal.color_of('Новая строка') is None
+            assert terminal.color_of('description') is None
+            assert terminal.color_of('on multi line') is None
             terminal.send('o')
             terminal.paste('дочерний')
             terminal.send('\r')
@@ -335,6 +385,9 @@ uda.taskwarrior-tui.shortcuts.1=/usr/bin/true
             terminal.send('C')
             screen = terminal.send('\\')
             assert 'Checklists' in screen, screen
+            row = next(line for line in screen.splitlines() if 'NEW_TASK_ONE_NOTE' in line)
+            assert re.fullmatch(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}  NEW_TASK_ONE_NOTE', row[60:]), row
+            print('PASS: annotation dates/text stay in left/right columns in bottom and right panes', flush=True)
             screen = terminal.send('z', 0.8)
             assert 'Checklists —' not in screen and 'Annotations — all tasks' not in screen, screen
             assert all(t['status'] == 'pending' for t in tasks().values())

@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use ratatui::{
   Frame,
   layout::{Constraint, Direction, Layout, Rect},
-  style::{Modifier, Style},
+  style::{Color, Modifier, Style},
   text::{Line, Span},
   widgets::{Block, Borders, Paragraph},
 };
@@ -508,14 +508,7 @@ impl ChecklistsState {
       for item in &list.items {
         let start = lines.len();
         let highlighted = Some(item.id) == self.selected && self.focused;
-        let style = if highlighted {
-          // Do not inherit completed-item dimming into the active selection.
-          selection_style(config)
-        } else if item.checked {
-          Style::default().add_modifier(Modifier::DIM)
-        } else {
-          Style::default()
-        };
+        let style = if highlighted { selection_style(config) } else { Style::default() };
         wrap_item(&mut lines, item, body.width, style);
         if highlighted {
           // Paragraph styles only existing glyphs. Pad every continuation line
@@ -648,23 +641,39 @@ fn wrap_item(lines: &mut Vec<Line<'static>>, item: &checklist::Item, width: u16,
   }
   let mut logical_lines = item.text.split('\n');
   let title = logical_lines.next().unwrap_or_default();
-  let prefix = format!("{}- [{}] ", "  ".repeat(item.depth as usize), if item.checked { 'x' } else { ' ' });
-  if prefix.width() >= width {
-    push_wrapped(lines, &format!("{prefix}{title}"), width as u16, "", style);
+  let bullet = format!("{}- ", "  ".repeat(item.depth as usize));
+  let marker = if item.checked { "[x]" } else { "[ ]" };
+  // Status colors belong only to the marker. Selection still overlays the
+  // entire item, with explicit selection colors taking precedence as before.
+  let marker_style = Style::default().fg(if item.checked { Color::Green } else { Color::Red }).patch(style);
+  let prefix_width = bullet.width() + marker.len() + 1;
+  if prefix_width >= width {
+    let spans = [
+      Span::styled(bullet, style),
+      Span::styled(marker, marker_style),
+      Span::styled(format!(" {title}"), style),
+    ];
+    push_wrapped_spans(lines, &spans, width as u16, "", style);
   } else {
-    let indent = " ".repeat(prefix.width());
-    let mut used = prefix.width();
-    let mut text = prefix;
+    let indent = " ".repeat(prefix_width);
+    let mut used = prefix_width;
+    let mut line = Line::from(vec![
+      Span::styled(bullet, style),
+      Span::styled(marker, marker_style),
+      Span::styled(" ", style),
+    ])
+    .style(style);
     for grapheme in title.graphemes(true) {
       let grapheme = if grapheme.width() > width - indent.len() { "�" } else { grapheme };
       if used + grapheme.width() > width {
-        lines.push(Line::styled(std::mem::replace(&mut text, indent.clone()), style));
+        lines.push(std::mem::replace(&mut line, Line::styled(indent.clone(), style)));
         used = indent.len();
       }
-      text.push_str(grapheme);
+      // The final span is always plain text, separate from the checkbox span.
+      line.spans.last_mut().unwrap().content.to_mut().push_str(grapheme);
       used += grapheme.width();
     }
-    lines.push(Line::styled(text, style));
+    lines.push(line);
   }
   let description_indent = "  ".repeat(item.depth as usize + 1);
   for description in logical_lines {
@@ -955,12 +964,18 @@ mod tests {
     for y in first..child {
       for x in 0..70 {
         assert!(buffer[(x, y)].modifier.contains(Modifier::BOLD | Modifier::REVERSED), "({x}, {y})");
+        let color = if y == first && (2..5).contains(&x) { Color::Green } else { Color::Reset };
+        assert_eq!(buffer[(x, y)].fg, color);
         assert!(!buffer[(x, y)].modifier.contains(Modifier::DIM), "Checked selection must remain readable");
       }
     }
     assert!(!buffer[(2, child)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(2, child)].fg, Color::Reset);
+    assert_eq!(buffer[(4, child)].fg, Color::Red);
     let other = row_with(&buffer, "Other done");
-    assert!(buffer[(0, other)].modifier.contains(Modifier::DIM));
+    assert_eq!(buffer[(0, other)].fg, Color::Reset);
+    assert_eq!(buffer[(2, other)].fg, Color::Green);
+    assert!(!buffer[(0, other)].modifier.contains(Modifier::DIM));
 
     // Moving selection removes all old continuation-line highlights.
     state.selected = Some(state.document.lists[0].items[1].id);
@@ -971,13 +986,19 @@ mod tests {
     }
     assert!(buffer[(2, child)].modifier.contains(Modifier::BOLD | Modifier::REVERSED));
     assert!(buffer[(69, child)].modifier.contains(Modifier::REVERSED));
+    assert_eq!(buffer[(2, child)].fg, Color::Reset);
+    assert_eq!(buffer[(4, child)].fg, Color::Red);
 
     // Tab back to tasks removes the active checklist highlight.
     state.focused = false;
     let buffer = render_selection(&mut terminal, &mut state, &config);
     assert!(!buffer[(2, child)].modifier.intersects(Modifier::BOLD | Modifier::REVERSED));
     assert!(!buffer[(69, child)].modifier.contains(Modifier::REVERSED));
-    assert!(buffer[(6, first)].modifier.contains(Modifier::DIM));
+    assert_eq!(buffer[(6, first)].fg, Color::Reset);
+    assert_eq!(buffer[(2, first)].fg, Color::Green);
+    assert_eq!(buffer[(2, child)].fg, Color::Reset);
+    assert_eq!(buffer[(4, child)].fg, Color::Red);
+    assert!(!buffer[(6, first)].modifier.contains(Modifier::DIM));
   }
 
   #[test]
@@ -1010,6 +1031,80 @@ mod tests {
     );
   }
 
+  #[test]
+  fn only_checkbox_markers_are_colored_in_items_and_import_previews() {
+    let (mut state, config) = selection_fixture();
+    let markdown = "- [x] Done\n  Done description\n  - [ ] Child\n    Child description\n- [ ] Todo\n  Todo description";
+    let list = Checklist::from_markdown(markdown).unwrap();
+    state.document.lists = vec![list];
+    state.selected = Some(state.document.lists[0].items[0].id);
+    state.focused = false;
+    let assert_colors = |buffer: &Buffer, parent_checked: bool, child_checked: bool| {
+      for (name, start, checked) in [("Done", 2, parent_checked), ("Child", 4, child_checked), ("Todo", 2, false)] {
+        let title = row_with(buffer, &format!("- [{}] {name}", if checked { 'x' } else { ' ' }));
+        let description = row_with(buffer, &format!("{name} description"));
+        for x in 0..buffer.area.width {
+          let expected = if (start..start + 3).contains(&x) {
+            if checked { Color::Green } else { Color::Red }
+          } else {
+            Color::Reset
+          };
+          assert_eq!(buffer[(x, title)].fg, expected, "{name} column {x}");
+          assert_eq!(buffer[(x, description)].fg, Color::Reset, "{name} description column {x}");
+        }
+      }
+    };
+    let mut terminal = Terminal::new(TestBackend::new(35, 22)).unwrap();
+    assert_colors(&render_selection(&mut terminal, &mut state, &config), true, false);
+    state.document.lists[0].items[0].checked = false;
+    state.document.lists[0].items[1].checked = true;
+    assert_colors(&render_selection(&mut terminal, &mut state, &config), false, true);
+    state.sync_task(Some(annotated_task()));
+    state.begin(EditKind::Import, markdown).unwrap();
+    assert_colors(&render_selection(&mut terminal, &mut state, &config), true, false);
+  }
+
+  #[test]
+  fn marker_colors_do_not_bleed_when_prefixes_titles_or_descriptions_wrap() {
+    for checked in [false, true] {
+      for depth in [0, 1, 16] {
+        let item = checklist::Item {
+          id: Uuid::new_v4(),
+          text: "Uncolored [x] Привет 猫 e\u{301}\nDescription with [ ] literal text".into(),
+          checked,
+          depth,
+        };
+        for width in 0..=45 {
+          let mut lines = Vec::new();
+          wrap_item(&mut lines, &item, width, Style::default());
+          let color = if checked { Color::Green } else { Color::Red };
+          let mut colored = String::new();
+          for line in &lines {
+            assert!(line.width() <= usize::from(width));
+            assert_eq!(line.style.fg, None);
+            for span in &line.spans {
+              if span.style.fg == Some(color) {
+                colored.push_str(&span.content);
+              } else {
+                assert_eq!(span.style.fg, None);
+              }
+            }
+          }
+          assert_eq!(
+            colored,
+            if width == 0 {
+              ""
+            } else if checked {
+              "[x]"
+            } else {
+              "[ ]"
+            }
+          );
+        }
+      }
+    }
+  }
+
   fn annotated_task() -> Task {
     let document = Document {
       version: 1,
@@ -1036,7 +1131,7 @@ mod tests {
   }
 
   #[test]
-  fn task_annotations_follow_checklist_with_the_exact_timeline_styles_and_order() {
+  fn task_annotations_follow_checklist_in_columns_with_timeline_colors_and_order() {
     use ratatui::widgets::Widget;
     let (mut state, mut config) = selection_fixture();
     let task = annotated_task();
@@ -1065,7 +1160,9 @@ mod tests {
     assert_eq!(buffer[(0, section + 1)].fg, Color::Green);
     assert_eq!(buffer[(12, section + 1)].fg, Color::Cyan);
     assert_eq!(buffer[(2, section + 2)].fg, Color::Yellow);
-    assert_eq!(buffer[(4, section + 3)].fg, Color::Reset);
+    assert_eq!(buffer[(21, section + 2)].fg, Color::Reset);
+    let date = crate::datetime::format_local_date_time(task.annotations().unwrap()[2].entry());
+    assert!(buffer_text(&buffer).contains(&format!("{date}  Newest A")));
   }
 
   #[test]
@@ -1151,11 +1248,11 @@ mod tests {
     let selected = state.selected;
     state.manual_scroll = true;
     state.scroll = usize::MAX;
-    let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
     let buffer = render_selection(&mut terminal, &mut state, &config);
     assert!(state.scroll > 10);
     let end = row_with(&buffer, "ANNOTATION_END");
-    assert!(!buffer[(4, end)].modifier.contains(Modifier::REVERSED));
+    assert!(!buffer[(21, end)].modifier.contains(Modifier::REVERSED));
     assert_eq!(state.selected, selected);
     terminal.backend_mut().resize(100, 50);
     render_selection(&mut terminal, &mut state, &config);

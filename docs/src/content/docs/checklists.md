@@ -41,6 +41,12 @@ Project/task heading colors and local timestamps are retained. Narrow panes wrap
 
 Use **Ctrl-e/Ctrl-y** to scroll down/up or **Ctrl-d/Ctrl-u** for a page, with either task or checklist focus. Scrolling does not change the selected checkbox; annotations are read-only here and never count toward checklist progress. Switching tasks updates both sections; `r` refreshes them. Import previews show only the draft, without annotations.
 
+## Opening wrapped links
+
+HTTP and HTTPS URLs in checklist titles, item descriptions, import previews, and annotations carry explicit **OSC 8 hyperlinks**. Use your terminal's link-opening gesture (for example, **Shift+Click**) on any wrapped fragment to open the complete URL—even when the beginning has scrolled out of view.
+
+This requires OSC 8 support in your terminal and, if used, your terminal multiplexer. The terminal chooses the click modifier and browser; the TUI does not launch URLs itself. Other terminals still show the same text, but their automatic URL detection may only recognize the fragment on one row. Literal newlines inside a URL are not joined, and Markdown link syntax is displayed unchanged.
+
 ## Clipboard support
 
 - **macOS:** `pbpaste` (included with macOS).

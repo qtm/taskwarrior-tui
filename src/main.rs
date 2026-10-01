@@ -17,6 +17,7 @@ mod datetime;
 mod event;
 mod help;
 mod history;
+mod hyperlink;
 mod keyconfig;
 mod note;
 #[cfg(test)]

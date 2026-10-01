@@ -152,6 +152,8 @@ From Projects, Timesheet, or Calendar, `n` opens the task list with annotations;
 
 Each entry contains one annotation and its creation date/time, with a project/task heading. Entries are sorted newest first across **all tasks**, including completed, deleted, and waiting tasks, regardless of the current report filter or active context. Only consecutive entries belonging to the same task share a heading; annotations are never reordered to force grouping. Tasks without a project show `(no project)`, and tasks without a numeric ID show their short UUID. Timestamps use your local timezone.
 
+HTTP/HTTPS links use **OSC 8 hyperlinks**, so your terminal's link-opening gesture (such as **Shift+Click**) opens the full URL from any wrapped fragment. This requires terminal/multiplexer OSC 8 support; the gesture remains controlled by your terminal. The same support is available in [checklist items and annotations](./checklists.md#opening-wrapped-links).
+
 - `Ctrl-e` / `Ctrl-y`: scroll annotations down / up one line.
 - `Ctrl-d` / `Ctrl-u`: scroll annotations down / up one page.
 - `j` / `k`, arrows, `J` / `K`, and `g` / `G`: navigate the **task list**, as usual.

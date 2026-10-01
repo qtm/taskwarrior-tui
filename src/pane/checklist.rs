@@ -12,7 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
-use super::annotations::{AnnotationsState, push_wrapped, push_wrapped_spans};
+use super::annotations::AnnotationsState;
+use crate::hyperlink::{LinkedLine, LinkedParagraph, push_wrapped, push_wrapped_spans, push_wrapped_with_prefix};
 use crate::{
   action::Action,
   app::{Mode, TaskwarriorTui, handle_movement},
@@ -500,7 +501,7 @@ impl ChecklistsState {
         config.uda_style_title,
       );
       if list.items.is_empty() {
-        lines.push(Line::from(format!(
+        lines.push(LinkedLine::new(format!(
           "Empty checklist. Tab to focus, then {} to add an item.",
           key_label(keys.add)
         )));
@@ -515,6 +516,7 @@ impl ChecklistsState {
           // so the highlight covers the pane width, including trailing space.
           for line in &mut lines[start..] {
             line
+              .text
               .spans
               .push(Span::raw(" ".repeat(usize::from(body.width).saturating_sub(line.width()))));
           }
@@ -525,9 +527,9 @@ impl ChecklistsState {
         }
       }
     } else if self.task.is_none() {
-      lines.push(Line::from("Select a task first."));
+      lines.push(LinkedLine::new("Select a task first."));
     } else {
-      lines.push(Line::from(format!(
+      lines.push(LinkedLine::new(format!(
         "No checklists. Tab then {} to add an item, or {} to import Markdown.",
         key_label(keys.add),
         key_label(keys.import_checklist)
@@ -542,7 +544,7 @@ impl ChecklistsState {
       && let Some(task) = &self.task
     {
       let count = task.annotations().map_or(0, Vec::len);
-      lines.push(Line::default());
+      lines.push(LinkedLine::default());
       push_wrapped(
         &mut lines,
         &format!("Annotations — current task | {count} annotations (local time)"),
@@ -574,10 +576,7 @@ impl ChecklistsState {
       }
     }
     self.scroll = self.scroll.min(max_scroll);
-    f.render_widget(
-      Paragraph::new(lines.into_iter().skip(self.scroll).take(self.viewport).collect::<Vec<_>>()),
-      body,
-    );
+    f.render_widget(LinkedParagraph(lines.into_iter().skip(self.scroll).take(self.viewport).collect()), body);
     let footer = if let Some(error) = &self.error {
       error.clone()
     } else if self.focused {
@@ -634,7 +633,7 @@ fn key_label(key: KeyCode) -> String {
   }
 }
 
-fn wrap_item(lines: &mut Vec<Line<'static>>, item: &checklist::Item, width: u16, style: Style) {
+fn wrap_item(lines: &mut Vec<LinkedLine>, item: &checklist::Item, width: u16, style: Style) {
   let width = usize::from(width);
   if width == 0 {
     return;
@@ -655,25 +654,14 @@ fn wrap_item(lines: &mut Vec<Line<'static>>, item: &checklist::Item, width: u16,
     ];
     push_wrapped_spans(lines, &spans, width as u16, "", style);
   } else {
-    let indent = " ".repeat(prefix_width);
-    let mut used = prefix_width;
-    let mut line = Line::from(vec![
-      Span::styled(bullet, style),
-      Span::styled(marker, marker_style),
-      Span::styled(" ", style),
-    ])
-    .style(style);
-    for grapheme in title.graphemes(true) {
-      let grapheme = if grapheme.width() > width - indent.len() { "�" } else { grapheme };
-      if used + grapheme.width() > width {
-        lines.push(std::mem::replace(&mut line, Line::styled(indent.clone(), style)));
-        used = indent.len();
-      }
-      // The final span is always plain text, separate from the checkbox span.
-      line.spans.last_mut().unwrap().content.to_mut().push_str(grapheme);
-      used += grapheme.width();
-    }
-    lines.push(line);
+    push_wrapped_with_prefix(
+      lines,
+      &[Span::styled(title, style)],
+      width as u16,
+      &" ".repeat(prefix_width),
+      vec![Span::styled(bullet, style), Span::styled(marker, marker_style), Span::styled(" ", style)],
+      style,
+    );
   }
   let description_indent = "  ".repeat(item.depth as usize + 1);
   for description in logical_lines {
@@ -1081,8 +1069,8 @@ mod tests {
           let mut colored = String::new();
           for line in &lines {
             assert!(line.width() <= usize::from(width));
-            assert_eq!(line.style.fg, None);
-            for span in &line.spans {
+            assert_eq!(line.text.style.fg, None);
+            for span in &line.text.spans {
               if span.style.fg == Some(color) {
                 colored.push_str(&span.content);
               } else {
@@ -1151,7 +1139,7 @@ mod tests {
     // project-only colors and default annotation text (no checkbox highlight).
     let lines = AnnotationsState::task_lines(&task, 100, &config);
     let mut expected = Buffer::empty(Rect::new(0, 0, 100, lines.len() as u16));
-    Paragraph::new(lines).render(expected.area, &mut expected);
+    LinkedParagraph(lines).render(expected.area, &mut expected);
     for y in 0..expected.area.height {
       for x in 0..100 {
         assert_eq!(buffer[(x, section + 1 + y)], expected[(x, y)], "({x}, {y})");
@@ -1377,6 +1365,66 @@ mod tests {
   }
 
   #[test]
+  fn checklist_hyperlinks_cover_titles_descriptions_and_import_previews() {
+    use crate::hyperlink::cell_link;
+    let title_url = "https://example.com/title/long/path?x=1&y=2";
+    let description_url = "https://example.org/description/猫#fragment";
+    let markdown = format!("- [ ] Read {title_url}\n  Description {description_url}.");
+    let (mut state, config) = selection_fixture();
+    state.document.lists = vec![Checklist::from_markdown(&markdown).unwrap()];
+    state.selected = Some(state.document.lists[0].items[0].id);
+    let mut terminal = Terminal::new(TestBackend::new(25, 30)).unwrap();
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    for url in [title_url, description_url] {
+      let text: String = buffer
+        .content
+        .iter()
+        .filter_map(cell_link)
+        .filter(|(target, _)| *target == url)
+        .map(|(_, glyph)| glyph)
+        .collect();
+      assert_eq!(text, url);
+    }
+    for cell in buffer.content.iter().filter(|cell| cell_link(cell).is_some()) {
+      assert!(cell.modifier.contains(Modifier::REVERSED), "Links must retain item highlighting");
+    }
+    state.manual_scroll = true;
+    state.scroll = 3;
+    terminal.backend_mut().resize(25, 5);
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    assert!(buffer.content.iter().any(|cell| cell_link(cell).is_some()));
+    assert!(
+      buffer
+        .content
+        .iter()
+        .filter_map(cell_link)
+        .all(|(target, _)| target == title_url || target == description_url)
+    );
+
+    // Narrow widths take the alternative prefix-wrapping path.
+    for width in 1..=8 {
+      let mut lines = Vec::new();
+      wrap_item(&mut lines, &state.document.lists[0].items[0], width, Style::default());
+      let mut buffer = Buffer::empty(Rect::new(0, 0, width, lines.len() as u16));
+      ratatui::widgets::Widget::render(LinkedParagraph(lines), buffer.area, &mut buffer);
+      let links: Vec<_> = buffer.content.iter().filter_map(cell_link).collect();
+      assert!(!links.is_empty());
+      assert!(links.iter().all(|(target, _)| *target == title_url || *target == description_url));
+    }
+    state.sync_task(Some(annotated_task()));
+    state.begin(EditKind::Import, &markdown).unwrap();
+    terminal.backend_mut().resize(65, 20);
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    for url in [title_url, description_url] {
+      assert!(buffer.content.iter().filter_map(cell_link).any(|(target, _)| target == url));
+    }
+    state.editor = None;
+    state.sync_task(None);
+    let buffer = render_selection(&mut terminal, &mut state, &config);
+    assert!(buffer.content.iter().all(|cell| cell_link(cell).is_none()));
+  }
+
+  #[test]
   fn markdown_wrap_uses_hanging_indent_and_graphemes() {
     let mut lines = Vec::new();
     let item = checklist::Item {
@@ -1388,7 +1436,7 @@ mod tests {
     wrap_item(&mut lines, &item, 17, Style::default());
     let rendered: Vec<String> = lines
       .iter()
-      .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect())
+      .map(|line| line.text.spans.iter().map(|span| span.content.as_ref()).collect())
       .collect();
     assert!(rendered[0].starts_with("  - [x] Привет"));
     assert!(rendered.iter().skip(1).all(|line| line.starts_with("        ")));

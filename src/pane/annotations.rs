@@ -10,11 +10,18 @@ use ratatui::{
   widgets::{Block, Borders, Paragraph},
 };
 use task_hookrs::{import::import, task::Task};
-use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 use uuid::Uuid;
 
-use crate::{action::Action, app::Mode, config::Config, datetime, event::KeyCode, keyconfig::KeyConfig};
+use crate::{
+  action::Action,
+  app::Mode,
+  config::Config,
+  datetime,
+  event::KeyCode,
+  hyperlink::{LinkedLine, LinkedParagraph, push_wrapped, push_wrapped_spans},
+  keyconfig::KeyConfig,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 struct AnnotationEntry {
@@ -142,7 +149,7 @@ impl AnnotationsState {
 
   /// Checklist-only layout: dates on the left and annotation text on the right.
   /// Sorting, local time formatting and heading colors match the all-task timeline.
-  pub(super) fn task_lines(task: &Task, width: u16, config: &Config) -> Vec<Line<'static>> {
+  pub(super) fn task_lines(task: &Task, width: u16, config: &Config) -> Vec<LinkedLine> {
     let entries = Self::entries_from_tasks(std::slice::from_ref(task));
     // Two columns need at least one cell each plus a gap. Only degenerate
     // viewports fall back to stacked text, without dropping either value.
@@ -178,22 +185,23 @@ impl AnnotationsState {
       let mut date_lines = date_lines.into_iter();
       let mut text_lines = text_lines.into_iter();
       for _ in 0..row_count {
-        let date_line = date_lines.next().unwrap_or_default();
+        let mut date_line = date_lines.next().unwrap_or_default();
         let padding = usize::from(date_width + gap).saturating_sub(date_line.width());
-        let mut spans = date_line.spans;
-        spans.push(Span::raw(" ".repeat(padding)));
-        spans.extend(text_lines.next().unwrap_or_default().spans);
-        lines.push(Line::from(spans));
+        date_line.text.spans.push(Span::raw(" ".repeat(padding)));
+        date_line.append(text_lines.next().unwrap_or_default());
+        // Date color belongs to its spans, not the entire combined row.
+        date_line.text.style = Style::default();
+        lines.push(date_line);
       }
     }
     lines
   }
 
-  fn lines(&self, width: u16, config: &Config) -> Vec<Line<'static>> {
+  fn lines(&self, width: u16, config: &Config) -> Vec<LinkedLine> {
     Self::format_entries(&self.entries, width, config)
   }
 
-  fn format_entries(entries: &[AnnotationEntry], width: u16, config: &Config) -> Vec<Line<'static>> {
+  fn format_entries(entries: &[AnnotationEntry], width: u16, config: &Config) -> Vec<LinkedLine> {
     let heading_style = config.uda_style_title.add_modifier(Modifier::BOLD);
     let date_style = config.color.get("color.label").copied().unwrap_or_default();
     let mut lines = Vec::new();
@@ -201,7 +209,7 @@ impl AnnotationsState {
     for entry in entries {
       if previous_task != Some(entry.task_uuid) {
         if previous_task.is_some() {
-          lines.push(Line::default());
+          lines.push(LinkedLine::default());
         }
         let heading = entry.heading(heading_style, config.project_title_style(&entry.project));
         push_wrapped_spans(&mut lines, &heading, width, "", heading_style);
@@ -231,7 +239,7 @@ impl AnnotationsState {
       push_wrapped(&mut lines, error, body.width, "", config.uda_style_command_error);
       lines
     } else if self.entries.is_empty() {
-      vec![Line::from("No annotations found.")]
+      vec![LinkedLine::new("No annotations found.")]
     } else {
       self.lines(body.width, config)
     };
@@ -241,7 +249,7 @@ impl AnnotationsState {
     // Slice before rendering instead of using Paragraph's u16 scroll offset, so long
     // annotation histories are not limited to 65,535 lines.
     let visible: Vec<_> = lines.into_iter().skip(self.scroll).take(self.viewport_height).collect();
-    f.render_widget(Paragraph::new(visible), body);
+    f.render_widget(LinkedParagraph(visible), body);
     let toggle = key_label(keys.annotations);
     let refresh = key_label(keys.refresh);
     let footer = format!("{toggle}/Esc: close | Ctrl-e/y: scroll | {refresh}: refresh");
@@ -268,48 +276,6 @@ fn key_label(key: KeyCode) -> String {
     KeyCode::Char(c) => c.to_string(),
     _ => format!("{key:?}"),
   }
-}
-
-/// Wrap at grapheme boundaries, preserving newlines and indentation. Prewrapping
-/// makes scrolling and resize clamping use the exact number of displayed lines.
-pub(crate) fn push_wrapped(lines: &mut Vec<Line<'static>>, text: &str, width: u16, indent: &str, style: Style) {
-  push_wrapped_spans(lines, &[Span::styled(text, style)], width, indent, style);
-}
-
-pub(crate) fn push_wrapped_spans(lines: &mut Vec<Line<'static>>, spans: &[Span<'_>], width: u16, indent: &str, style: Style) {
-  let width = usize::from(width);
-  if width == 0 {
-    return;
-  }
-  let indent = if indent.width() < width { indent } else { "" };
-  let new_line = || Line::styled(indent.to_string(), style);
-  let mut line = new_line();
-  let mut used = indent.width();
-  for span in spans {
-    for grapheme in span.content.graphemes(true) {
-      if grapheme == "\n" || grapheme == "\r\n" {
-        lines.push(std::mem::replace(&mut line, new_line()));
-        used = indent.width();
-        continue;
-      }
-      // A terminal cannot display a wide grapheme in a one-column viewport.
-      let grapheme = if grapheme.width() > width - indent.width() { "�" } else { grapheme };
-      let size = grapheme.width();
-      if used + size > width {
-        lines.push(std::mem::replace(&mut line, new_line()));
-        used = indent.width();
-      }
-      if let Some(last) = line.spans.last_mut()
-        && last.style == span.style
-      {
-        last.content.to_mut().push_str(grapheme);
-      } else {
-        line.spans.push(Span::styled(grapheme.to_string(), span.style));
-      }
-      used += size;
-    }
-  }
-  lines.push(line);
 }
 
 #[cfg(test)]
@@ -635,7 +601,7 @@ mod tests {
     state.entries[0].description = "NOTE".into();
     let lines = state.lines(100, &config);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 100, 6));
-    Paragraph::new(lines).render(buffer.area, &mut buffer);
+    LinkedParagraph(lines).render(buffer.area, &mut buffer);
     for x in [0, 1, 2, 3, 4, 5, 7] {
       assert_eq!(buffer[(x, 0)].fg, Color::Green);
     }
@@ -651,7 +617,7 @@ mod tests {
 
     // The project wraps before the heading's metadata; no color may leak past it.
     let mut wrapped = Buffer::empty(Rect::new(0, 0, 5, 20));
-    Paragraph::new(state.lines(5, &config)).render(wrapped.area, &mut wrapped);
+    LinkedParagraph(state.lines(5, &config)).render(wrapped.area, &mut wrapped);
     assert_eq!(wrapped[(0, 0)].fg, Color::Green);
     assert_eq!(wrapped[(0, 1)].symbol(), "猫");
     assert_eq!(wrapped[(0, 1)].fg, Color::Green);
@@ -662,7 +628,58 @@ mod tests {
 
     state.entries[0].project.clear();
     let heading = state.lines(100, &config).remove(0);
-    assert!(heading.spans.iter().all(|span| span.style.fg != Some(Color::Green)));
+    assert!(heading.text.spans.iter().all(|span| span.style.fg != Some(Color::Green)));
+  }
+
+  #[test]
+  fn annotation_hyperlinks_survive_scrolling_resize_and_date_columns() {
+    use crate::hyperlink::cell_link;
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, widgets::Widget};
+    let config = test_config();
+    let url = "https://example.com/long/annotation/path?one=1&two=2#fragment";
+    let mut task = tasks().remove(0);
+    task.annotations_mut().unwrap().truncate(1);
+    *task.annotations_mut().unwrap()[0].description_mut() = format!("Read {url}.");
+    let mut state = AnnotationsState {
+      entries: AnnotationsState::entries_from_tasks(&[task.clone()]),
+      ..Default::default()
+    };
+    let mut terminal = Terminal::new(TestBackend::new(25, 6)).unwrap();
+    terminal.draw(|f| state.draw(f, f.area(), &config, &KeyConfig::default())).unwrap();
+    state.scroll = state.max_scroll;
+    terminal.draw(|f| state.draw(f, f.area(), &config, &KeyConfig::default())).unwrap();
+    let links: Vec<_> = terminal.backend().buffer().content.iter().filter_map(cell_link).collect();
+    assert!(!links.is_empty());
+    assert!(links.iter().all(|(target, _)| *target == url));
+    terminal.backend_mut().resize(90, 12);
+    terminal.draw(|f| state.draw(f, f.area(), &config, &KeyConfig::default())).unwrap();
+    assert_eq!(state.scroll, 0);
+    let linked_text: String = terminal
+      .backend()
+      .buffer()
+      .content
+      .iter()
+      .filter_map(cell_link)
+      .map(|(_, glyph)| glyph)
+      .collect();
+    assert_eq!(linked_text, url);
+
+    let mut columns = Buffer::empty(Rect::new(4, 2, 40, 15));
+    LinkedParagraph(AnnotationsState::task_lines(&task, 40, &config)).render(columns.area, &mut columns);
+    let mut linked_text = String::new();
+    for y in columns.area.top()..columns.area.bottom() {
+      for x in columns.area.left()..columns.area.right() {
+        if let Some((target, glyph)) = cell_link(&columns[(x, y)]) {
+          assert!(x >= columns.area.left() + 21, "Dates and column padding must not be linked");
+          assert_eq!(target, url);
+          linked_text.push_str(glyph);
+        }
+      }
+    }
+    assert_eq!(linked_text, url);
+    state.entries.clear();
+    terminal.draw(|f| state.draw(f, f.area(), &config, &KeyConfig::default())).unwrap();
+    assert!(terminal.backend().buffer().content.iter().all(|cell| cell_link(cell).is_none()));
   }
 
   #[test]
